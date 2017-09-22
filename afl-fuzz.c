@@ -121,7 +121,8 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            skip_requested,            /* Skip request, via SIGUSR1        */
            run_over10m,               /* Run time over 10 minutes?        */
            persistent_mode,           /* Running in persistent mode?      */
-           fast_cal;                  /* Try to calibrate faster?         */
+           fast_cal,                  /* Try to calibrate faster?         */
+           max_ct_fuzzing;            /* Fuzz for maximum counts          */
 
 static s32 out_fd,                    /* Persistent fd for out_file       */
            dev_urandom_fd = -1,       /* Persistent fd for /dev/urandom   */
@@ -134,6 +135,8 @@ static s32 forksrv_pid,               /* PID of the fork server           */
            out_dir_fd = -1;           /* FD of the lock file              */
 
 EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
+
+EXP_ST u8  max_counts[MAP_SIZE];      /* PERF - keeps track of max value  */
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
@@ -944,6 +947,28 @@ static inline u8 has_new_bits(u8* virgin_map) {
 }
 
 
+/* whether the trace_bits attain some new maximum value for 
+   some i. max_counts is not updated after this so that we
+   can short-circuit this check. This won't cause any spurious saving 
+   because after this we call add_to_queue and in calibrate_case
+   we call update bitmap, which updates all the maxes accordingly.
+   The only case in which has_new_max will return here but the 
+   max value will not be set accordingly is if the input has
+   variable behavior and sometimes causes crashes
+   */
+static inline u8 has_new_max() {
+
+  for (int i = 0; i < MAP_SIZE; i++){
+      if (unlikely(trace_bits[i])){
+        if (unlikely(trace_bits[i] > max_counts[i])) {
+          return 1;
+        }
+      }
+  }
+  return 0;
+
+}
+
 /* Count the number of bits set in the provided bitmap. Used for the status
    screen several times every second, does not have to be fast. */
 
@@ -1233,6 +1258,7 @@ static void minimize_bits(u8* dst, u8* src) {
    contender, or if the contender has a more favorable speed x size factor. */
 
 // PERFTODO: also call when max count is achieved
+// no, don't need to do that.
 static void update_bitmap_score(struct queue_entry* q) {
 
   u32 i;
@@ -1247,8 +1273,9 @@ static void update_bitmap_score(struct queue_entry* q) {
 
        if (top_rated[i]) {
 
+        if (!max_ct_fuzzing){
+
          /* Faster-executing or smaller test cases are favored. */
-         // PERFTODO: favored if it's maximized
 
          if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue;
 
@@ -1260,17 +1287,37 @@ static void update_bitmap_score(struct queue_entry* q) {
            top_rated[i]->trace_mini = 0;
          }
 
+        } else {
+
+          /* in max count mode, test cases hitting max count are favored */
+          if (trace_bits[i] < max_counts[i]) continue;
+
+        }
+
+
        }
 
        /* Insert ourselves as the new winner. */
 
        top_rated[i] = q;
-       q->tc_ref++;
 
-       // PERFTODO: this will alsoo change
-       if (!q->trace_mini) {
-         q->trace_mini = ck_alloc(MAP_SIZE >> 3);
-         minimize_bits(q->trace_mini, trace_bits);
+       /* change scores accordingly */
+
+       if (!max_ct_fuzzing){
+               
+          q->tc_ref++;
+
+          if (!q->trace_mini) {
+            q->trace_mini = ck_alloc(MAP_SIZE >> 3);
+            minimize_bits(q->trace_mini, trace_bits);
+          }
+
+       } else {
+
+          /* if we get here, we know that trace_bits[i] >= max_counts[i] */
+
+          max_counts[i] = trace_bits[i];
+
        }
 
        score_changed = 1;
@@ -1284,7 +1331,8 @@ static void update_bitmap_score(struct queue_entry* q) {
    goes over top_rated[] entries, and then sequentially grabs winners for
    previously-unseen bytes (temp_v) and marks them as favored, at least
    until the next run. The favored entries are given more air time during
-   all fuzzing steps. */
+   all fuzzing steps. 
+   In the max_ct_fuzzing setting we only favor entries which achieve the max.*/
 
 static void cull_queue(void) {
 
@@ -1308,30 +1356,45 @@ static void cull_queue(void) {
     q = q->next;
   }
 
-  /* Let's see if anything in the bitmap isn't captured in temp_v.
-     If yes, and if it has a top_rated[] contender, let's use it. */
 
   for (i = 0; i < MAP_SIZE; i++)
-    // PERFTODO here
-    if (top_rated[i] && (temp_v[i >> 3] & (1 << (i & 7)))) {
+    
+    if (top_rated[i]) {
+      if (max_ct_fuzzing) {
 
-      u32 j = MAP_SIZE >> 3;
+        /* if top rated for any i, will be favored */
+        u8 was_favored_already = top_rated[i]->favored;
 
-      /* Remove all bits belonging to the current entry from temp_v. */
+        top_rated[i]->favored = 1;
 
-      // PERFTODO: remove this
-      while (j--) 
-        if (top_rated[i]->trace_mini[j])
-          temp_v[j] &= ~top_rated[i]->trace_mini[j];
+        /* increments counts only if not also favored for another i */
+        if (!was_favored_already){
+          queued_favored++;
+          pending_favored++;
+        }
 
-      top_rated[i]->favored = 1;
-      // PERFTODO: increment the next only if not already favored
-      queued_favored++;
+      } else if ((temp_v[i >> 3] & (1 << (i & 7)))) {
+        /* Let's see if anything in the bitmap isn't captured in temp_v.
+        If yes, and if it has a top_rated[] contender, let's use it. */
 
-      // PERFTODO: remove the was_fuzzed contdition here
-      if (!top_rated[i]->was_fuzzed) pending_favored++;
+        u32 j = MAP_SIZE >> 3;
+
+        /* Remove all bits belonging to the current entry from temp_v. */
+
+        while (j--) 
+          if (top_rated[i]->trace_mini[j])
+            temp_v[j] &= ~top_rated[i]->trace_mini[j];
+
+        top_rated[i]->favored = 1;
+        
+        queued_favored++;
+
+        if (!top_rated[i]->was_fuzzed) pending_favored++;
+
+      }
 
     }
+
 
   q = queue;
 
@@ -1375,6 +1438,11 @@ EXP_ST void setup_shm(void) {
   
   if (!trace_bits) PFATAL("shmat() failed");
 
+}
+
+/* set the max counts map to 0 */
+EXP_ST void setup_max_counts() {
+  memset(max_counts, 0, MAP_SIZE);
 }
 
 
@@ -3131,17 +3199,19 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
+    u8 hnm;
+    if (max_ct_fuzzing) hnm = has_new_max();
 
-    if (!(hnb = has_new_bits(virgin_bits))) {
+    if (!(hnb = has_new_bits(virgin_bits)) && (!max_ct_fuzzing || !hnm)) {
       if (crash_mode) total_crashes++;
       return 0;
     }    
-    //PERFTODO: achieves max bits
+   
 
 #ifndef SIMPLE_FILES
 
-    fn = alloc_printf("%s/queue/id:%06u,%s", out_dir, queued_paths,
-                      describe_op(hnb));
+    fn = alloc_printf("%s/queue/id:%06u,%s%s", out_dir, queued_paths,
+                      describe_op(hnb), (max_ct_fuzzing && hnm) ? ",+max" : "" );
 
 #else
 
@@ -4964,8 +5034,10 @@ static u8 fuzz_one(char** argv) {
        possibly skip to them at the expense of already-fuzzed or non-favored
        cases. */
 
-    // PERFTODO: doesn't matter if it was fuzzed, if it's still favored
-    if ((queue_cur->was_fuzzed || !queue_cur->favored) &&
+    /* in max count fuzzing mode, queue inputs remain favored even if 
+       they were previously fuzzed */
+
+    if (((queue_cur->was_fuzzed  & !max_ct_fuzzing)|| !queue_cur->favored) &&
         UR(100) < SKIP_TO_NEW_PROB) return 1;
 
   } else if (!dumb_mode && !queue_cur->favored && queued_paths > 10) {
@@ -6607,6 +6679,11 @@ abandon_entry:
     queue_cur->was_fuzzed = 1;
     pending_not_fuzzed--;
     if (queue_cur->favored) pending_favored--;
+  } else if (!stop_soon && !queue_cur->cal_failed 
+    && max_ct_fuzzing && queue_cur->favored){
+    // in max count fuzzing pending favored is incremented regardless 
+    // of having been fuzzed (deterministically) before or not. 
+    pending_favored--;
   }
 
   munmap(orig_in, queue_cur->len);
@@ -7060,7 +7137,8 @@ static void usage(u8* argv0) {
 
        "  -d            - quick & dirty mode (skips deterministic steps)\n"
        "  -n            - fuzz without instrumentation (dumb mode)\n"
-       "  -x dir        - optional fuzzer dictionary (see README)\n\n"
+       "  -x dir        - optional fuzzer dictionary (see README)\n"
+       "  -p            - fuzz with max count settings\n\n"
 
        "Other stuff:\n\n"
 
@@ -7719,9 +7797,14 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
+  while ((opt = getopt(argc, argv, "+pi:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
 
     switch (opt) {
+
+      case 'p':
+        SAYF("Max count fuzzing...\n");
+        max_ct_fuzzing = 1;
+        break;
 
       case 'i': /* input dir */
 
@@ -7949,6 +8032,7 @@ int main(int argc, char** argv) {
 
   setup_post();
   setup_shm();
+  if (max_ct_fuzzing) setup_max_counts();
   init_count_class16();
 
   setup_dirs_fds();
