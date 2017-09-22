@@ -1322,6 +1322,7 @@ static void cull_queue(void) {
       top_rated[i]->favored = 1;
       queued_favored++;
 
+      // PERFTODO: remove the was_fuzzed contdition here
       if (!top_rated[i]->was_fuzzed) pending_favored++;
 
     }
