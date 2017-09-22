@@ -1232,6 +1232,7 @@ static void minimize_bits(u8* dst, u8* src) {
    for every byte in the bitmap. We win that slot if there is no previous
    contender, or if the contender has a more favorable speed x size factor. */
 
+// PERFTODO: also call when max count is achieved
 static void update_bitmap_score(struct queue_entry* q) {
 
   u32 i;
@@ -1247,6 +1248,7 @@ static void update_bitmap_score(struct queue_entry* q) {
        if (top_rated[i]) {
 
          /* Faster-executing or smaller test cases are favored. */
+         // PERFTODO: favored if it's maximized
 
          if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue;
 
@@ -1265,6 +1267,7 @@ static void update_bitmap_score(struct queue_entry* q) {
        top_rated[i] = q;
        q->tc_ref++;
 
+       // PERFTODO: this will alsoo change
        if (!q->trace_mini) {
          q->trace_mini = ck_alloc(MAP_SIZE >> 3);
          minimize_bits(q->trace_mini, trace_bits);
@@ -1309,17 +1312,20 @@ static void cull_queue(void) {
      If yes, and if it has a top_rated[] contender, let's use it. */
 
   for (i = 0; i < MAP_SIZE; i++)
+    // PERFTODO here
     if (top_rated[i] && (temp_v[i >> 3] & (1 << (i & 7)))) {
 
       u32 j = MAP_SIZE >> 3;
 
       /* Remove all bits belonging to the current entry from temp_v. */
 
+      // PERFTODO: remove this
       while (j--) 
         if (top_rated[i]->trace_mini[j])
           temp_v[j] &= ~top_rated[i]->trace_mini[j];
 
       top_rated[i]->favored = 1;
+      // PERFTODO: increment the next only if not already favored
       queued_favored++;
 
       // PERFTODO: remove the was_fuzzed contdition here
@@ -3130,6 +3136,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
       if (crash_mode) total_crashes++;
       return 0;
     }    
+    //PERFTODO: achieves max bits
 
 #ifndef SIMPLE_FILES
 
@@ -4957,6 +4964,7 @@ static u8 fuzz_one(char** argv) {
        possibly skip to them at the expense of already-fuzzed or non-favored
        cases. */
 
+    // PERFTODO: doesn't matter if it was fuzzed, if it's still favored
     if ((queue_cur->was_fuzzed || !queue_cur->favored) &&
         UR(100) < SKIP_TO_NEW_PROB) return 1;
 
