@@ -45,6 +45,7 @@
 #include <termios.h>
 #include <dlfcn.h>
 #include <sched.h>
+#include <stdarg.h>
 
 #include <sys/wait.h>
 #include <sys/time.h>
@@ -136,7 +137,9 @@ static s32 forksrv_pid,               /* PID of the fork server           */
 
 EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
 
-EXP_ST u8  max_counts[MAP_SIZE];      /* PERF - keeps track of max value  */
+
+EXP_ST u8  raw_trace_bits[MAP_SIZE],  /* PERF - non-bucketed trace bits   */
+           max_counts[MAP_SIZE];      /* PERF - keeps track of max value  */
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
@@ -240,7 +243,8 @@ struct queue_entry {
       fs_redundant;                   /* Marked as redundant in the fs?   */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
-      exec_cksum;                     /* Checksum of the execution trace  */
+      exec_cksum,                     /* Checksum of the execution trace  */
+      counts_cksum;                   /* PERF - cksum of unbukceted trace */
 
   u64 exec_us,                        /* Execution time (us)              */
       handicap,                       /* Number of queue cycles behind    */
@@ -322,6 +326,20 @@ enum {
   /* 04 */ FAULT_NOINST,
   /* 05 */ FAULT_NOBITS
 };
+
+void DEBUG (char const *fmt, ...) {
+    return;
+    static FILE *f = NULL;
+    if (f == NULL) {
+      u8 * fn = alloc_printf("%s/max-ct-fuzzing.log", out_dir);
+      f= fopen(fn, "w");
+      ck_free(fn);
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+}
 
 
 /* Get unix time in milliseconds */
@@ -959,9 +977,10 @@ static inline u8 has_new_bits(u8* virgin_map) {
 static inline u8 has_new_max() {
 
   for (int i = 0; i < MAP_SIZE; i++){
-      if (unlikely(trace_bits[i])){
-        if (unlikely(trace_bits[i] > max_counts[i])) {
-          return 1;
+      if (unlikely(raw_trace_bits[i])){
+        if (unlikely(raw_trace_bits[i] > max_counts[i])) {
+           DEBUG("Achieves count of %d (> %d) at branch %d\n", raw_trace_bits[i], max_counts[i], i);
+           return 1;
         }
       }
   }
@@ -1261,6 +1280,7 @@ static void minimize_bits(u8* dst, u8* src) {
 // no, don't need to do that.
 static void update_bitmap_score(struct queue_entry* q) {
 
+  DEBUG("updating bitmap score...\n");
   u32 i;
   u64 fav_factor = q->exec_us * q->len;
 
@@ -1290,7 +1310,7 @@ static void update_bitmap_score(struct queue_entry* q) {
         } else {
 
           /* in max count mode, test cases hitting max count are favored */
-          if (trace_bits[i] < max_counts[i]) continue;
+          if (raw_trace_bits[i] < max_counts[i]) continue;
 
         }
 
@@ -1314,9 +1334,9 @@ static void update_bitmap_score(struct queue_entry* q) {
 
        } else {
 
-          /* if we get here, we know that trace_bits[i] >= max_counts[i] */
-
-          max_counts[i] = trace_bits[i];
+          /* if we get here, we know that raw_trace_bits[i] >= max_counts[i] */
+          if (raw_trace_bits[i] > 1) DEBUG("Setting max count for branch %d to %d\n", i, raw_trace_bits[i]);
+          max_counts[i] = raw_trace_bits[i];
 
        }
 
@@ -1370,7 +1390,7 @@ static void cull_queue(void) {
         /* increments counts only if not also favored for another i */
         if (!was_favored_already){
           queued_favored++;
-          pending_favored++;
+          if (!top_rated[i]->was_fuzzed) pending_favored++;
         }
 
       } else if ((temp_v[i >> 3] & (1 << (i & 7)))) {
@@ -2498,7 +2518,8 @@ static u8 run_target(char** argv, u32 timeout) {
   MEM_BARRIER();
 
   tb4 = *(u32*)trace_bits;
-
+ 
+  if (max_ct_fuzzing) memcpy(raw_trace_bits, trace_bits, MAP_SIZE);
 #ifdef __x86_64__
   classify_counts((u64*)trace_bits);
 #else
@@ -2686,6 +2707,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
       } else {
 
         q->exec_cksum = cksum;
+        if (max_ct_fuzzing) q->counts_cksum = hash32(raw_trace_bits, MAP_SIZE, HASH_CONST); 
         memcpy(first_trace, trace_bits, MAP_SIZE);
 
       }
@@ -3219,6 +3241,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #endif /* ^!SIMPLE_FILES */
 
+    DEBUG("adding %s to queue\n", fn);
+
     add_to_queue(fn, len, 0);
 
     if (hnb == 2) {
@@ -3227,6 +3251,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     }
 
     queue_top->exec_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+    if (max_ct_fuzzing) queue_top->counts_cksum = hash32(raw_trace_bits, MAP_SIZE, HASH_CONST);
 
     /* Try to calibrate inline; this also calls update_bitmap_score() when
        successful. */
@@ -4534,6 +4559,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
   static u8 tmp[64];
   static u8 clean_trace[MAP_SIZE];
+  static u8 raw_clean_trace[MAP_SIZE];
 
   u8  needs_write = 0, fault = 0;
   u32 trim_exec = 0;
@@ -4580,15 +4606,19 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
       if (stop_soon || fault == FAULT_ERROR) goto abort_trimming;
 
       /* Note that we don't keep track of crashes or hangs here; maybe TODO? */
+      if (!max_ct_fuzzing)
+        cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+      else
+        cksum = hash32(raw_trace_bits, MAP_SIZE, HASH_CONST);
 
-      cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
 
       /* If the deletion had no impact on the trace, make it permanent. This
          isn't perfect for variable-path inputs, but we're just making a
          best-effort pass, so it's not a big deal if we end up with false
          negatives every now and then. */
 
-      if (cksum == q->exec_cksum) {
+      if ((!max_ct_fuzzing && (cksum == q->exec_cksum)) ||
+          (max_ct_fuzzing && (cksum == q->counts_cksum))) {
 
         u32 move_tail = q->len - remove_pos - trim_avail;
 
@@ -4605,6 +4635,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
           needs_write = 1;
           memcpy(clean_trace, trace_bits, MAP_SIZE);
+          if (max_ct_fuzzing) memcpy(raw_clean_trace, raw_trace_bits, MAP_SIZE); 
 
         }
 
@@ -4638,6 +4669,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
     close(fd);
 
     memcpy(trace_bits, clean_trace, MAP_SIZE);
+    if (max_ct_fuzzing) memcpy(raw_trace_bits, raw_clean_trace, MAP_SIZE); 
     update_bitmap_score(q);
 
   }
@@ -5028,7 +5060,7 @@ static u8 fuzz_one(char** argv) {
 
 #else
 
-  if (pending_favored) {
+  if (pending_favored || (max_ct_fuzzing && queued_favored)) {
 
     /* If we have any favored, non-fuzzed new arrivals in the queue,
        possibly skip to them at the expense of already-fuzzed or non-favored
@@ -5037,7 +5069,7 @@ static u8 fuzz_one(char** argv) {
     /* in max count fuzzing mode, queue inputs remain favored even if 
        they were previously fuzzed */
 
-    if (((queue_cur->was_fuzzed  & !max_ct_fuzzing)|| !queue_cur->favored) &&
+    if (((queue_cur->was_fuzzed  && !max_ct_fuzzing) || !queue_cur->favored) &&
         UR(100) < SKIP_TO_NEW_PROB) return 1;
 
   } else if (!dumb_mode && !queue_cur->favored && queued_paths > 10) {
