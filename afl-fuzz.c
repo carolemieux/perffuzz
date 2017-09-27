@@ -5409,12 +5409,21 @@ static u8 fuzz_one(char** argv) {
       /* If in dumb mode or if the file is very short, just flag everything
          without wasting time on checksums. */
 
-      if (!dumb_mode && len >= EFF_MIN_LEN)
-        cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
-      else
-        cksum = ~queue_cur->exec_cksum;
+      if (!dumb_mode && len >= EFF_MIN_LEN){
+        if (max_ct_fuzzing) 
+          cksum = hash32(raw_trace_bits, MAP_SIZE, HASH_CONST);
+        else
+          cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+      }
+      else{
+        if (max_ct_fuzzing) 
+          cksum = ~queue_cur->counts_cksum;
+        else
+          cksum = ~queue_cur->exec_cksum;
+      }
 
-      if (cksum != queue_cur->exec_cksum) {
+      if ( (!max_ct_fuzzing && (cksum != queue_cur->exec_cksum)) ||
+           (max_ct_fuzzing && (cksum != queue_cur->counts_cksum))) {
         eff_map[EFF_APOS(stage_cur)] = 1;
         eff_cnt++;
       }
