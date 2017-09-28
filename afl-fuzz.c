@@ -328,7 +328,6 @@ enum {
 };
 
 void DEBUG (char const *fmt, ...) {
-    return;
     static FILE *f = NULL;
     if (f == NULL) {
       u8 * fn = alloc_printf("%s/max-ct-fuzzing.log", out_dir);
@@ -6720,12 +6719,7 @@ abandon_entry:
     queue_cur->was_fuzzed = 1;
     pending_not_fuzzed--;
     if (queue_cur->favored) pending_favored--;
-  } else if (!stop_soon && !queue_cur->cal_failed 
-    && max_ct_fuzzing && queue_cur->favored){
-    // in max count fuzzing pending favored is incremented regardless 
-    // of having been fuzzed (deterministically) before or not. 
-    pending_favored--;
-  }
+  } 
 
   munmap(orig_in, queue_cur->len);
 
