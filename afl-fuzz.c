@@ -139,8 +139,8 @@ static s32 forksrv_pid,               /* PID of the fork server           */
 EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
 
 
-EXP_ST u8  raw_trace_bits[MAP_SIZE],  /* PERF - non-bucketed trace bits   */
-           max_counts[MAP_SIZE];      /* PERF - keeps track of max value  */
+EXP_ST u8  raw_trace_bits[MAP_SIZE];  /* PERF - non-bucketed trace bits   */
+EXP_ST u16 max_counts[MAP_SIZE];      /* PERF - keeps track of max value  */
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
@@ -977,16 +977,27 @@ static inline u8 has_new_bits(u8* virgin_map) {
 static inline u8 has_new_max() {
   
   int start = 0;
-  if (half_trace) start = MAP_SIZE >> 1; 
-
-  for (int i = start; i < MAP_SIZE; i++){
-      if (unlikely(raw_trace_bits[i])){
-        if (unlikely(raw_trace_bits[i] > max_counts[i])) {
-           DEBUG("Achieves count of %d (> %d) at branch %d\n", raw_trace_bits[i], max_counts[i], i);
-           return 1;
+  if (!half_trace)
+    for (int i = start; i < MAP_SIZE; i++){
+        if (unlikely(raw_trace_bits[i])){
+          if (unlikely(raw_trace_bits[i] > max_counts[i])) {
+             DEBUG("Achieves count of %d (> %d) at branch %d\n", raw_trace_bits[i], max_counts[i], i);
+             return 1;
+          }
         }
-      }
+    }
+  else{
+    u16 * raw_bits = (u16 *) raw_trace_bits;
+    for (int i = MAP_SIZE >> 2; i < (MAP_SIZE >> 1); i++){
+        if (unlikely(raw_bits[i])){
+          if (unlikely(raw_bits[i] > max_counts[i])) {
+             DEBUG("Achieves count of %d (> %d) at branch %d\n", raw_bits[i], max_counts[i], i);
+             return 1;
+          }
+        }
+    }
   }
+
   return 0;
 
 }
@@ -1291,7 +1302,7 @@ static void update_bitmap_score(struct queue_entry* q) {
 
   /* For every byte set in trace_bits[], see if there is a previous winner,
      and how it compares to us. */
-
+  if (!half_trace) {
   for (i = start; i < MAP_SIZE; i++)
 
     if (trace_bits[i] || (max_ct_fuzzing && raw_trace_bits[i])) {
@@ -1348,6 +1359,42 @@ static void update_bitmap_score(struct queue_entry* q) {
        score_changed = 1;
 
      }
+  } else {
+
+     
+    start = MAP_SIZE >> 2;
+    u16 * raw_bits = (u16 *) raw_trace_bits;
+
+    /* For every byte set in trace_bits[], see if there is a previous winner,
+     and how it compares to us. */
+
+    for (i = start; i < (MAP_SIZE >> 1); i++)
+
+      if (raw_bits[i]) {
+
+       if (top_rated[i]) {
+
+          /* in max count mode, test cases hitting max count are favored */
+          if (raw_bits[i] < max_counts[i]) continue;
+
+       }
+
+       /* Insert ourselves as the new winner. */
+
+       top_rated[i] = q;
+
+       /* change scores accordingly */
+
+        /* if we get here, we know that raw_trace_bits[i] >= max_counts[i] */
+        if (raw_bits[i] > 1) DEBUG("Setting max count for branch %d to %d\n", i, raw_bits[i]);
+        max_counts[i] = raw_bits[i];
+
+
+       score_changed = 1;
+
+     }
+
+     }
 
 }
 
@@ -1360,6 +1407,8 @@ static void update_bitmap_score(struct queue_entry* q) {
    In the max_ct_fuzzing setting we only favor entries which achieve the max.*/
 
 static void cull_queue(void) {
+
+  
 
   struct queue_entry* q;
   static u8 temp_v[MAP_SIZE >> 3];
@@ -1382,10 +1431,8 @@ static void cull_queue(void) {
   }
 
   u32 start = 0; 
-  if (half_trace) start = MAP_SIZE >> 1;
-
+  if (!half_trace){
   for (i = start; i < MAP_SIZE; i++)
-    
     if (top_rated[i]) {
       if (max_ct_fuzzing) {
 
@@ -1421,6 +1468,26 @@ static void cull_queue(void) {
       }
 
     }
+  } else {
+    DEBUG("Culling Q\n");
+
+    for (i = (MAP_SIZE >> 2); i < (MAP_SIZE>> 1); i++)
+    if (top_rated[i]) {
+      DEBUG("There is a top rated for %d\n", i);
+      /* if top rated for any i, will be favored */
+      u8 was_favored_already = top_rated[i]->favored;
+      top_rated[i]->favored = 1;
+
+      /* increments counts only if not also favored for another i */
+      if (!was_favored_already){
+        queued_favored++;
+        if (!top_rated[i]->was_fuzzed) pending_favored++;
+      }
+ 
+
+    }
+
+  }
 
 
   q = queue;
