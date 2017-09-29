@@ -123,7 +123,8 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            run_over10m,               /* Run time over 10 minutes?        */
            persistent_mode,           /* Running in persistent mode?      */
            fast_cal,                  /* Try to calibrate faster?         */
-           max_ct_fuzzing;            /* Fuzz for maximum counts          */
+           max_ct_fuzzing,            /* Fuzz for maximum counts          */
+           half_trace;                /* ... only max on half the trace   */
 
 static s32 out_fd,                    /* Persistent fd for out_file       */
            dev_urandom_fd = -1,       /* Persistent fd for /dev/urandom   */
@@ -974,8 +975,11 @@ static inline u8 has_new_bits(u8* virgin_map) {
    variable behavior and sometimes causes crashes
    */
 static inline u8 has_new_max() {
+  
+  int start = 0;
+  if (half_trace) start = MAP_SIZE >> 1; 
 
-  for (int i = 0; i < MAP_SIZE; i++){
+  for (int i = start; i < MAP_SIZE; i++){
       if (unlikely(raw_trace_bits[i])){
         if (unlikely(raw_trace_bits[i] > max_counts[i])) {
            DEBUG("Achieves count of %d (> %d) at branch %d\n", raw_trace_bits[i], max_counts[i], i);
@@ -1279,16 +1283,18 @@ static void minimize_bits(u8* dst, u8* src) {
 // no, don't need to do that.
 static void update_bitmap_score(struct queue_entry* q) {
 
-  DEBUG("updating bitmap score...\n");
+  DEBUG("updating bitmap score for %s\n", q->fname);
   u32 i;
   u64 fav_factor = q->exec_us * q->len;
+  u32 start = 0; 
+  if (half_trace) start = MAP_SIZE >> 1;
 
   /* For every byte set in trace_bits[], see if there is a previous winner,
      and how it compares to us. */
 
-  for (i = 0; i < MAP_SIZE; i++)
+  for (i = start; i < MAP_SIZE; i++)
 
-    if (trace_bits[i]) {
+    if (trace_bits[i] || (max_ct_fuzzing && raw_trace_bits[i])) {
 
        if (top_rated[i]) {
 
@@ -1375,8 +1381,10 @@ static void cull_queue(void) {
     q = q->next;
   }
 
+  u32 start = 0; 
+  if (half_trace) start = MAP_SIZE >> 1;
 
-  for (i = 0; i < MAP_SIZE; i++)
+  for (i = start; i < MAP_SIZE; i++)
     
     if (top_rated[i]) {
       if (max_ct_fuzzing) {
@@ -2524,6 +2532,8 @@ static u8 run_target(char** argv, u32 timeout) {
 #else
   classify_counts((u32*)trace_bits);
 #endif /* ^__x86_64__ */
+
+  if (half_trace) memset(trace_bits + (MAP_SIZE >> 1), 0, MAP_SIZE >> 1);
 
   prev_timed_out = child_timed_out;
 
@@ -7832,13 +7842,18 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+pi:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
+  while ((opt = getopt(argc, argv, "+phi:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
 
     switch (opt) {
 
       case 'p':
         SAYF("Max count fuzzing...\n");
         max_ct_fuzzing = 1;
+        break;
+      
+      case 'h':
+        SAYF("Max count on only 1/2 of input trace...\n");
+        half_trace = 1;
         break;
 
       case 'i': /* input dir */
