@@ -975,10 +975,9 @@ static inline u8 has_new_bits(u8* virgin_map) {
    variable behavior and sometimes causes crashes
    */
 static inline u8 has_new_max() {
-  
-  int start = 0;
-  if (!half_trace)
-    for (int i = start; i < MAP_SIZE; i++){
+
+  if (!half_trace){
+    for (int i = 0; i < MAP_SIZE; i++){
         if (unlikely(raw_trace_bits[i])){
           if (unlikely(raw_trace_bits[i] > max_counts[i])) {
              DEBUG("Achieves count of %d (> %d) at branch %d\n", raw_trace_bits[i], max_counts[i], i);
@@ -986,7 +985,9 @@ static inline u8 has_new_max() {
           }
         }
     }
-  else{
+  }
+
+  else {
     u16 * raw_bits = (u16 *) raw_trace_bits;
     for (int i = MAP_SIZE >> 2; i < (MAP_SIZE >> 1); i++){
         if (unlikely(raw_bits[i])){
@@ -1297,15 +1298,23 @@ static void update_bitmap_score(struct queue_entry* q) {
   DEBUG("updating bitmap score for %s\n", q->fname);
   u32 i;
   u64 fav_factor = q->exec_us * q->len;
+
   u32 start = 0; 
-  if (half_trace) start = MAP_SIZE >> 1;
+  u32 end = MAP_SIZE;
+
+  if (half_trace) {
+    start = MAP_SIZE >> 2;
+    end = MAP_SIZE >> 1; 
+  }
+
+  u16 * u16_raw_trace_bits = (u16 *) raw_trace_bits;
 
   /* For every byte set in trace_bits[], see if there is a previous winner,
      and how it compares to us. */
-  if (!half_trace) {
-  for (i = start; i < MAP_SIZE; i++)
+  
+  for (i = start; i < end; i++)
 
-    if (trace_bits[i] || (max_ct_fuzzing && raw_trace_bits[i])) {
+    if (trace_bits[i] || (max_ct_fuzzing && raw_trace_bits[i]) || (half_trace && u16_raw_trace_bits[i])) {
 
        if (top_rated[i]) {
 
@@ -1326,7 +1335,8 @@ static void update_bitmap_score(struct queue_entry* q) {
         } else {
 
           /* in max count mode, test cases hitting max count are favored */
-          if (raw_trace_bits[i] < max_counts[i]) continue;
+          if (!half_trace && (raw_trace_bits[i] < max_counts[i])) continue;
+          if (half_trace && (u16_raw_trace_bits[i] < max_counts[i])) continue;
 
         }
 
@@ -1351,50 +1361,20 @@ static void update_bitmap_score(struct queue_entry* q) {
        } else {
 
           /* if we get here, we know that raw_trace_bits[i] >= max_counts[i] */
-          if (raw_trace_bits[i] > 1) DEBUG("Setting max count for branch %d to %d\n", i, raw_trace_bits[i]);
-          max_counts[i] = raw_trace_bits[i];
+          if (!half_trace && (raw_trace_bits[i] > 1))
+            DEBUG("Setting max count for branch %d to %d\n", i, raw_trace_bits[i]);
+          if (half_trace && (u16_raw_trace_bits[i] > 1))
+            DEBUG("Setting max count for branch %d to %d\n", i, u16_raw_trace_bits[i]);
+          max_counts[i] = half_trace ? u16_raw_trace_bits[i]: raw_trace_bits[i];
+
+   
 
        }
 
        score_changed = 1;
 
      }
-  } else {
 
-     
-    start = MAP_SIZE >> 2;
-    u16 * raw_bits = (u16 *) raw_trace_bits;
-
-    /* For every byte set in trace_bits[], see if there is a previous winner,
-     and how it compares to us. */
-
-    for (i = start; i < (MAP_SIZE >> 1); i++)
-
-      if (raw_bits[i]) {
-
-       if (top_rated[i]) {
-
-          /* in max count mode, test cases hitting max count are favored */
-          if (raw_bits[i] < max_counts[i]) continue;
-
-       }
-
-       /* Insert ourselves as the new winner. */
-
-       top_rated[i] = q;
-
-       /* change scores accordingly */
-
-        /* if we get here, we know that raw_trace_bits[i] >= max_counts[i] */
-        if (raw_bits[i] > 1) DEBUG("Setting max count for branch %d to %d\n", i, raw_bits[i]);
-        max_counts[i] = raw_bits[i];
-
-
-       score_changed = 1;
-
-     }
-
-     }
 
 }
 
@@ -1407,8 +1387,6 @@ static void update_bitmap_score(struct queue_entry* q) {
    In the max_ct_fuzzing setting we only favor entries which achieve the max.*/
 
 static void cull_queue(void) {
-
-  
 
   struct queue_entry* q;
   static u8 temp_v[MAP_SIZE >> 3];
@@ -1431,10 +1409,21 @@ static void cull_queue(void) {
   }
 
   u32 start = 0; 
-  if (!half_trace){
-  for (i = start; i < MAP_SIZE; i++)
+  u32 end = MAP_SIZE;
+
+  if (half_trace) {
+    start = MAP_SIZE >> 2;
+    end = MAP_SIZE >> 1;
+  }
+
+
+  for (i = start; i < end; i++) {
+
     if (top_rated[i]) {
+
       if (max_ct_fuzzing) {
+
+        DEBUG("There is a top rated for %d\n", i);
 
         /* if top rated for any i, will be favored */
         u8 was_favored_already = top_rated[i]->favored;
@@ -1468,27 +1457,9 @@ static void cull_queue(void) {
       }
 
     }
-  } else {
-    DEBUG("Culling Q\n");
-
-    for (i = (MAP_SIZE >> 2); i < (MAP_SIZE>> 1); i++)
-    if (top_rated[i]) {
-      DEBUG("There is a top rated for %d\n", i);
-      /* if top rated for any i, will be favored */
-      u8 was_favored_already = top_rated[i]->favored;
-      top_rated[i]->favored = 1;
-
-      /* increments counts only if not also favored for another i */
-      if (!was_favored_already){
-        queued_favored++;
-        if (!top_rated[i]->was_fuzzed) pending_favored++;
-      }
- 
-
-    }
+  
 
   }
-
 
   q = queue;
 
