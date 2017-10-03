@@ -1314,8 +1314,8 @@ static void update_bitmap_score(struct queue_entry* q) {
   
   for (i = start; i < end; i++)
 
-    if (trace_bits[i] || (max_ct_fuzzing && raw_trace_bits[i]) || (half_trace && u16_raw_trace_bits[i])) {
-
+    if ((!max_ct_fuzzing && trace_bits[i]) || (max_ct_fuzzing && !half_trace && raw_trace_bits[i]) || (half_trace && u16_raw_trace_bits[i])) {
+       
        if (top_rated[i]) {
 
         if (!max_ct_fuzzing){
