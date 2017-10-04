@@ -77,6 +77,10 @@
 #  define EXP_ST static
 #endif /* ^AFL_LIB */
 
+/* Staleness adjustment. when an input hits a branch with maximum staleness,
+   skip it with probability STALENESS_CONST/100 */
+#define STALENESS_CONST 100
+
 /* Lots of globals, but mostly for the status UI and other things where it
    really makes no sense to haul them around as function parameters. */
 
@@ -124,7 +128,8 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            persistent_mode,           /* Running in persistent mode?      */
            fast_cal,                  /* Try to calibrate faster?         */
            max_ct_fuzzing,            /* Fuzz for maximum counts          */
-           half_trace;                /* ... only max on half the trace   */
+           half_trace,                /* ... only max on half the trace   */
+           prioritize_less_stale;     /* prioritize by staleness          */
 
 static s32 out_fd,                    /* Persistent fd for out_file       */
            dev_urandom_fd = -1,       /* Persistent fd for /dev/urandom   */
@@ -138,10 +143,11 @@ static s32 forksrv_pid,               /* PID of the fork server           */
 
 EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
 
-
 EXP_ST u8  raw_trace_bits[MAP_SIZE];  /* PERF - non-bucketed trace bits   */
 EXP_ST u16 max_counts[MAP_SIZE];      /* PERF - keeps track of max value  */
 EXP_ST u32 staleness[MAP_SIZE];       /* PERF - the staleness max values */
+
+
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
@@ -5182,24 +5188,93 @@ static u8 fuzz_one(char** argv) {
   if ( max_ct_fuzzing && queue_cur->favored) {
 
     memcpy(orig_max_counts, max_counts, MAP_SIZE);
+    memset(maxed_by_input, 0, MAP_SIZE);
     s32 start = 0;
     s32 end = MAP_SIZE; 
     u16 * u16_raw_trace_bits = (u16 *) raw_trace_bits;
+    // start the max at 1 to avoid div by 0 
+    u32 max_staleness = 1;
+    u32 min_staleness = 0;
+    u8 first_in = 1;
 
     if (half_trace) {
       start = MAP_SIZE >> 2;
       end = MAP_SIZE >> 1;
     }
 
+    int count = 0;
+    for (int k = start; k < end; k ++){
+      count+= maxed_by_input[k] ? 1 : 0;
+    }
+    DEBUG("COUNT AT START: %d\n", count);
+
+    /* increment staleness and find my min staleness/overall max staleness */
     for (s32 k=start; k < end; k++){
-      if (half_trace && top_rated[k])
-        DEBUG("There is a top rated for %d, val is %d, staleness is %d\n", k, max_counts[k], staleness[k]);
-      /* increment staleness for any score that's not increased */ 
-      if ((half_trace && (u16_raw_trace_bits[k] == max_counts[k])) || 
-        (!half_trace && (raw_trace_bits[k] == max_counts[k]))) {
+      // sanity check
+      if ((max_counts[k] && ! top_rated[k]) || (top_rated[k] && !max_counts[k])) {
+        DEBUG("SOMETHINS IS TERRIBLY WRONG AT %d\n", k);
+      }
+
+      // if there is a non-zero redundancy score at this index.. 
+      if (max_counts[k]){
+        // potentially set a new max stalness
+        max_staleness = (max_staleness < staleness[k]) ? staleness[k] : max_staleness;
+
+        // log the top rated for this one and the staleness
+        if (half_trace && top_rated[k])
+        DEBUG("There is a top rated for %d, val is %d, staleness is %d %s\n", k, max_counts[k], staleness[k],
+          ((half_trace && (u16_raw_trace_bits[k] == max_counts[k])) || 
+           (!half_trace && (raw_trace_bits[k] == max_counts[k]))) ? "(hit by me)" : "");
+
+        /* increment staleness for any score that this input hits the max of
+           if score is increased while fuzzing input, staleness will be set to 0  */
+        if ((half_trace && (u16_raw_trace_bits[k] == max_counts[k])) || 
+            (!half_trace && (raw_trace_bits[k] == max_counts[k]))) {
+          
+          // set the minimum staleness properly
+          if (first_in) {
+            min_staleness = staleness[k];
+            first_in = 0;
+          }
+          else min_staleness = (staleness[k] < min_staleness) ? staleness[k] : min_staleness;
+          DEBUG("heyyyyy you %d\n", k);
           staleness[k]++;
           maxed_by_input[k] = 1;
-      } 
+
+        }
+
+      }
+    }
+
+    count = 0;
+    for (int k = start; k < end; k ++){
+      count+= maxed_by_input[k] ? 1 : 0;
+    }
+    DEBUG("COUNT AT END: %d\n", count);
+
+    /* check if we should skip this input */
+
+    if (prioritize_less_stale) {
+       // if something has 0 staleness we definitely won't skip it. 
+       
+       u32 staleness_score = 100 - STALENESS_CONST*min_staleness/max_staleness;
+       DEBUG("min_stale: %d, max_stale: %d, score: %d\n", min_staleness, max_staleness, staleness_score);
+
+       if (staleness_score < UR(100)){
+        // decided to skip the input. remove the increments. 
+        for (s32 k=start; k < end; k++){
+          if (maxed_by_input[k]) {
+            DEBUG("Byeee you %d\n", k);
+            staleness[k]--;
+          }
+        }
+        DEBUG("Skipping because too stale (score: %d, min_stale: %d)\n", staleness_score, min_staleness);
+        // we also need to do some memory cleanup since we ran this input. 
+        munmap(orig_in, queue_cur->len);
+        if (in_buf != orig_in) ck_free(in_buf);
+        ck_free(out_buf);
+        return 1;
+       }
     }
 
   }
@@ -7271,7 +7346,9 @@ static void usage(u8* argv0) {
        "  -d            - quick & dirty mode (skips deterministic steps)\n"
        "  -n            - fuzz without instrumentation (dumb mode)\n"
        "  -x dir        - optional fuzzer dictionary (see README)\n"
-       "  -p            - fuzz with max count settings\n\n"
+       "  -p            - fuzz with max count settings\n"
+       "  -h            - maxmimize the second half of trace bits, treated as 16-bit\n"
+       "  -s            - prioritize inputs with lower stalness (requires p)\n\n"
 
        "Other stuff:\n\n"
 
@@ -7930,9 +8007,14 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+phi:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
+  while ((opt = getopt(argc, argv, "+sphi:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
 
     switch (opt) {
+
+      case 's':
+        SAYF("Prioritizing less stale inputs...\n");
+        prioritize_less_stale = 1;
+        break;
 
       case 'p':
         SAYF("Max count fuzzing...\n");
