@@ -79,7 +79,7 @@
 
 /* Staleness adjustment. when an input hits a branch with maximum staleness,
    skip it with probability STALENESS_CONST/100 */
-#define STALENESS_CONST 100
+#define STALENESS_CONST 80
 
 /* Lots of globals, but mostly for the status UI and other things where it
    really makes no sense to haul them around as function parameters. */
@@ -5202,18 +5202,8 @@ static u8 fuzz_one(char** argv) {
       end = MAP_SIZE >> 1;
     }
 
-    int count = 0;
-    for (int k = start; k < end; k ++){
-      count+= maxed_by_input[k] ? 1 : 0;
-    }
-    DEBUG("COUNT AT START: %d\n", count);
-
     /* increment staleness and find my min staleness/overall max staleness */
     for (s32 k=start; k < end; k++){
-      // sanity check
-      if ((max_counts[k] && ! top_rated[k]) || (top_rated[k] && !max_counts[k])) {
-        DEBUG("SOMETHINS IS TERRIBLY WRONG AT %d\n", k);
-      }
 
       // if there is a non-zero redundancy score at this index.. 
       if (max_counts[k]){
@@ -5237,7 +5227,7 @@ static u8 fuzz_one(char** argv) {
             first_in = 0;
           }
           else min_staleness = (staleness[k] < min_staleness) ? staleness[k] : min_staleness;
-          DEBUG("heyyyyy you %d\n", k);
+
           staleness[k]++;
           maxed_by_input[k] = 1;
 
@@ -5246,11 +5236,6 @@ static u8 fuzz_one(char** argv) {
       }
     }
 
-    count = 0;
-    for (int k = start; k < end; k ++){
-      count+= maxed_by_input[k] ? 1 : 0;
-    }
-    DEBUG("COUNT AT END: %d\n", count);
 
     /* check if we should skip this input */
 
@@ -5264,7 +5249,6 @@ static u8 fuzz_one(char** argv) {
         // decided to skip the input. remove the increments. 
         for (s32 k=start; k < end; k++){
           if (maxed_by_input[k]) {
-            DEBUG("Byeee you %d\n", k);
             staleness[k]--;
           }
         }
