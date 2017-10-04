@@ -141,6 +141,7 @@ EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
 
 EXP_ST u8  raw_trace_bits[MAP_SIZE];  /* PERF - non-bucketed trace bits   */
 EXP_ST u16 max_counts[MAP_SIZE];      /* PERF - keeps track of max value  */
+EXP_ST u32 staleness[MAP_SIZE];       /* PERF - the staleness max values */
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
@@ -1344,7 +1345,6 @@ static void update_bitmap_score(struct queue_entry* q) {
        }
 
        /* Insert ourselves as the new winner. */
-
        top_rated[i] = q;
 
        /* change scores accordingly */
@@ -1422,8 +1422,6 @@ static void cull_queue(void) {
     if (top_rated[i]) {
 
       if (max_ct_fuzzing) {
-
-        DEBUG("There is a top rated for %d\n", i);
 
         /* if top rated for any i, will be favored */
         u8 was_favored_already = top_rated[i]->favored;
@@ -5098,6 +5096,9 @@ static u8 fuzz_one(char** argv) {
   u8  a_collect[MAX_AUTO_EXTRA];
   u32 a_len = 0;
 
+  u16 orig_max_counts[MAP_SIZE];
+  u8 maxed_by_input[MAP_SIZE];
+
 #ifdef IGNORE_FINDS
 
   /* In IGNORE_FINDS mode, skip any entries that weren't in the
@@ -5168,6 +5169,40 @@ static u8 fuzz_one(char** argv) {
   subseq_tmouts = 0;
 
   cur_depth = queue_cur->depth;
+
+  /*************
+   * STALENESS *
+   ************/
+
+  /* run to populate the raw_trace_bits */
+  write_to_testcase(in_buf, queue_cur->len);
+  run_target(argv, exec_tmout);
+
+  /* Computing staleness */
+  if ( max_ct_fuzzing && queue_cur->favored) {
+
+    memcpy(orig_max_counts, max_counts, MAP_SIZE);
+    s32 start = 0;
+    s32 end = MAP_SIZE; 
+    u16 * u16_raw_trace_bits = (u16 *) raw_trace_bits;
+
+    if (half_trace) {
+      start = MAP_SIZE >> 2;
+      end = MAP_SIZE >> 1;
+    }
+
+    for (s32 k=start; k < end; k++){
+      if (half_trace && top_rated[k])
+        DEBUG("There is a top rated for %d, val is %d, staleness is %d\n", k, max_counts[k], staleness[k]);
+      /* increment staleness for any score that's not increased */ 
+      if ((half_trace && (u16_raw_trace_bits[k] == max_counts[k])) || 
+        (!half_trace && (raw_trace_bits[k] == max_counts[k]))) {
+          staleness[k]++;
+          maxed_by_input[k] = 1;
+      } 
+    }
+
+  }
 
   /*******************************************
    * CALIBRATION (only if failed earlier on) *
@@ -6768,6 +6803,21 @@ abandon_entry:
     pending_not_fuzzed--;
     if (queue_cur->favored) pending_favored--;
   } 
+
+  /* update staleness accordingly */
+  if (max_ct_fuzzing && queue_cur->favored) {
+
+    s32 start = 0;
+    s32 end = MAP_SIZE; 
+
+    for (s32 k=start; k < end; k++)
+      if (maxed_by_input[k])
+        if (max_counts[k] > orig_max_counts[k]){
+          DEBUG("branch %d is not stale\n", k);
+          staleness[k] = 0;
+        }
+
+  }
 
   munmap(orig_in, queue_cur->len);
 
