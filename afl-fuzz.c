@@ -5194,7 +5194,7 @@ static u8 fuzz_one(char** argv) {
     u16 * u16_raw_trace_bits = (u16 *) raw_trace_bits;
     // start the max at 1 to avoid div by 0 
     u32 max_staleness = 1;
-    u32 overall_min_stale = 0;
+    u32 overall_min_stale = 1 << 31;
     u32 min_staleness = 0;
     u8 first_in = 1;
 
