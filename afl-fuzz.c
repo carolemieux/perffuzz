@@ -5194,6 +5194,7 @@ static u8 fuzz_one(char** argv) {
     u16 * u16_raw_trace_bits = (u16 *) raw_trace_bits;
     // start the max at 1 to avoid div by 0 
     u32 max_staleness = 1;
+    u32 overall_min_stale = 0;
     u32 min_staleness = 0;
     u8 first_in = 1;
 
@@ -5209,6 +5210,8 @@ static u8 fuzz_one(char** argv) {
       if (max_counts[k]){
         // potentially set a new max stalness
         max_staleness = (max_staleness < staleness[k]) ? staleness[k] : max_staleness;
+        // and a new min staleness
+        overall_min_stale = (overall_min_stale > staleness[k]) ? staleness[k] : overall_min_stale;
 
         // log the top rated for this one and the staleness
         if (half_trace && top_rated[k])
@@ -5242,8 +5245,8 @@ static u8 fuzz_one(char** argv) {
     if (prioritize_less_stale) {
        // if something has 0 staleness we definitely won't skip it. 
        
-       u32 staleness_score = 100 - STALENESS_CONST*min_staleness/max_staleness;
-       DEBUG("min_stale: %d, max_stale: %d, score: %d\n", min_staleness, max_staleness, staleness_score);
+       u32 staleness_score = 100 - STALENESS_CONST*(min_staleness-overall_min_stale)/max_staleness;
+       DEBUG("my_min_stale: %d, min_stale: %d, max_stale: %d, score: %d\n", min_staleness, overall_min_stale, max_staleness, staleness_score);
 
        if (staleness_score < UR(100)){
         // decided to skip the input. remove the increments. 
