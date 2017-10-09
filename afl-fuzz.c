@@ -46,6 +46,7 @@
 #include <dlfcn.h>
 #include <sched.h>
 #include <stdarg.h>
+#include <math.h>
 
 #include <sys/wait.h>
 #include <sys/time.h>
@@ -335,7 +336,7 @@ enum {
   /* 05 */ FAULT_NOBITS
 };
 
-void DEBUG (char const *fmt, ...) {
+void DEBUG1 (char const *fmt, ...) {
     static FILE *f = NULL;
     if (f == NULL) {
       u8 * fn = alloc_printf("%s/max-ct-fuzzing.log", out_dir);
@@ -348,6 +349,9 @@ void DEBUG (char const *fmt, ...) {
     va_end(ap);
 }
 
+void DEBUG (char const *fmt, ...) {
+  return;
+}
 
 /* Get unix time in milliseconds */
 
@@ -3292,9 +3296,24 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #endif /* ^!SIMPLE_FILES */
 
-    DEBUG("adding %s to queue\n", fn);
+    DEBUG1("adding %s to queue\n", fn);
 
     add_to_queue(fn, len, 0);
+
+    if (half_trace) {
+      double vec_val = 0; 
+      DEBUG1("has map: \n");
+      u16 * raw_bits = (u16 *) raw_trace_bits;
+      for (int k = MAP_SIZE >> 2; k < MAP_SIZE >> 1; k++){
+        if (raw_bits[k] > 0){
+          DEBUG1("%d: %d (%.6f)\n", k, raw_bits[k], raw_bits[k]/((float) (1 << 16)));
+          vec_val += pow(raw_bits[k]/((double) (1 << 16)), 2);
+        }
+      }
+      vec_val = sqrt(vec_val);
+      DEBUG1("%s has vec length %.6f\n", fn, vec_val);
+    }
+
 
     if (hnb == 2) {
       queue_top->has_new_cov = 1;
@@ -5319,6 +5338,8 @@ static u8 fuzz_one(char** argv) {
   /*********************
    * PERFORMANCE SCORE *
    *********************/
+
+  DEBUG1("Fuzzing %s\n", queue_cur->fname);
 
   orig_perf = perf_score = calculate_score(queue_cur);
 
