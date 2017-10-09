@@ -2847,6 +2847,7 @@ static void check_map_coverage(void) {
 
 static void perform_dry_run(char** argv) {
 
+  if (half_trace) DEBUG1("DRY RUNNING\n");
   struct queue_entry* q = queue;
   u32 cal_failures = 0;
   u8* skip_crashes = getenv("AFL_SKIP_CRASHES");
@@ -2873,6 +2874,20 @@ static void perform_dry_run(char** argv) {
 
     res = calibrate_case(argv, q, use_mem, 0, 1);
     ck_free(use_mem);
+
+    if (half_trace) {
+      double vec_val = 0; 
+      DEBUG1("has map: \n");
+      u16 * raw_bits = (u16 *) raw_trace_bits;
+      for (int k = MAP_SIZE >> 2; k < MAP_SIZE >> 1; k++){
+        if (raw_bits[k] > 0){
+          DEBUG1("%d: %d (%.6f)\n", k, raw_bits[k], raw_bits[k]/((float) (1 << 16)));
+          vec_val += pow(raw_bits[k]/((double) (1 << 16)), 2);
+        }
+      }
+      vec_val = sqrt(vec_val);
+      DEBUG1("%s has vec length %.6f\n", q->fname, vec_val);
+    }
 
     if (stop_soon) return;
 
