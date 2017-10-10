@@ -26,6 +26,8 @@
 #define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
 
+#define DEBUG fileonly
+
 #include "config.h"
 #include "types.h"
 #include "debug.h"
@@ -45,7 +47,10 @@
 #include <termios.h>
 #include <dlfcn.h>
 #include <sched.h>
+#include <stdbool.h>
 #include <stdarg.h>
+#include <limits.h>
+
 
 #include <sys/wait.h>
 #include <sys/time.h>
@@ -129,7 +134,8 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            fast_cal,                  /* Try to calibrate faster?         */
            max_ct_fuzzing,            /* Fuzz for maximum counts          */
            half_trace,                /* ... only max on half the trace   */
-           prioritize_less_stale;     /* prioritize by staleness          */
+           prioritize_less_stale,     /* prioritize by staleness          */
+           use_mask = 1;              /* use a mask?                      */
 
 static s32 out_fd,                    /* Persistent fd for out_file       */
            dev_urandom_fd = -1,       /* Persistent fd for /dev/urandom   */
@@ -335,7 +341,25 @@ enum {
   /* 05 */ FAULT_NOBITS
 };
 
-void DEBUG (char const *fmt, ...) {
+/* create a new  mask of the specified size */
+
+static inline u8* alloc_mask(u32 size) {
+
+  u8* mem;
+
+  if (!size) return NULL;
+  mem = ck_alloc_nozero(size);
+
+  memset(mem, 7, size);
+
+  mem[size - 1] = 4;
+
+  return mem;
+
+}
+
+
+void fileonly (char const *fmt, ...) { 
     static FILE *f = NULL;
     if (f == NULL) {
       u8 * fn = alloc_printf("%s/max-ct-fuzzing.log", out_dir);
@@ -347,6 +371,7 @@ void DEBUG (char const *fmt, ...) {
     vfprintf(f, fmt, ap);
     va_end(ap);
 }
+
 
 
 /* Get unix time in milliseconds */
@@ -797,7 +822,78 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 
 }
 
+/* get a random modifiable position (i.e. where mask & mod_type) 
+   for both overwriting and removal we want to make sure we are overwriting
+   or removing parts within the branch mask
+*/
+// assumes map_len is len, not len + 1. be careful. 
+static u32 get_random_modifiable_posn(u32 num_to_modify, u8 mod_type, u32 map_len, u8* mask, u32 * position_map){
+  u32 ret = 0xffffffff;
+  u32 position_map_len = 0;
+  int prev_start_of_1_block = -1;
+  int in_0_block = 1;
+  for (int i = 0; i < map_len; i ++){
+    if (mask[i] & mod_type){
+      // if the last thing we saw was a zero, set
+      // to start of 1 block
+      if (in_0_block) {
+        prev_start_of_1_block = i;
+        in_0_block = 0;
+      }
+    } else {
+      // for the first 0 we see (unless the eff_map starts with zeroes)
+      // we know the last index was the last 1 in the line
+      if ((!in_0_block) &&(prev_start_of_1_block != -1)){
+        int num_bytes = MAX(num_to_modify/8, 1);
+        for (int j = prev_start_of_1_block; j < i-num_bytes + 1; j++){
+            // I hate this ++ within operator stuff
+            position_map[position_map_len++] = j;
+        }
 
+      }
+      in_0_block = 1;
+    }
+  }
+
+  // if we ended not in a 0 block, add it in too 
+  if (!in_0_block) {
+    u32 num_bytes = MAX(num_to_modify/8, 1);
+    for (u32 j = prev_start_of_1_block; j < map_len-num_bytes + 1; j++){
+        // I hate this ++ within operator stuff
+        position_map[position_map_len++] = j;
+    }
+  }
+
+  if (position_map_len){
+    u32 random_pos = UR(position_map_len);
+    if (num_to_modify >= 8)
+      ret =  position_map[random_pos];
+    else // I think num_to_modify can only ever be 1 if it's less than 8. otherwise need trickier stuff. 
+      ret = position_map[random_pos] + UR(8);
+  } 
+
+  return ret;
+  
+}
+
+// just need a random element of mask which & with 4
+// assumes map_len is len, not len + 1. be careful. 
+static u32 get_random_insert_posn(u32 map_len, u8* mask, u32 * position_map){
+
+  u32 position_map_len = 0;
+  u32 ret = map_len;
+
+  for (u32 i = 0; i <= map_len; i++){
+    if (mask[i] & 4)
+      position_map[position_map_len++] = i;
+  }
+
+  if (position_map_len){
+    ret = position_map[UR(position_map_len)];
+  }
+
+  return ret;
+}
 /* Append new test case to the queue. */
 
 static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
@@ -2567,8 +2663,10 @@ static u8 run_target(char** argv, u32 timeout) {
   MEM_BARRIER();
 
   tb4 = *(u32*)trace_bits;
- 
   if (max_ct_fuzzing) memcpy(raw_trace_bits, trace_bits, MAP_SIZE);
+ 
+  
+
 #ifdef __x86_64__
   classify_counts((u64*)trace_bits);
 #else
@@ -2576,7 +2674,7 @@ static u8 run_target(char** argv, u32 timeout) {
 #endif /* ^__x86_64__ */
 
   if (half_trace) memset(trace_bits + (MAP_SIZE >> 1), 0, MAP_SIZE >> 1);
-
+  
   prev_timed_out = child_timed_out;
 
   /* Report outcome to caller. */
@@ -5085,6 +5183,20 @@ static u8 could_be_interest(u32 old_val, u32 new_val, u8 blen, u8 check_le) {
 
 }
 
+u8 retains_max(u8 * orig_raw_trace) {
+  if (!use_mask) return 1;
+
+
+  u16 * orig_trace = (u16 *) orig_raw_trace;
+  u16 * new_trace = (u16 *) raw_trace_bits;
+  for (int i = MAP_SIZE >> 2; i < MAP_SIZE >> 1; i++){
+    if (new_trace[i] < orig_trace[i]) {
+      DEBUG("at %d, %d is new, %d is old\n",i, new_trace[i], orig_trace[i]);
+      return 0;
+    }
+  }
+  return 1; 
+}
 
 /* Take the current entry from the queue, fuzz it for a while. This
    function is a tad too long... returns 0 if fuzzed successfully, 1 if
@@ -5105,6 +5217,13 @@ static u8 fuzz_one(char** argv) {
   u16 orig_max_counts[MAP_SIZE];
   u8 maxed_by_input[MAP_SIZE];
 
+  /* Mask Vars */
+  u8 * mask = 0;
+  u8 * orig_mask = 0;
+  u32 * position_map = NULL;
+  u8 orig_raw_trace[MAP_SIZE];
+
+
 #ifdef IGNORE_FINDS
 
   /* In IGNORE_FINDS mode, skip any entries that weren't in the
@@ -5112,7 +5231,7 @@ static u8 fuzz_one(char** argv) {
 
   if (queue_cur->depth > 1) return 1;
 
-#else
+#elsoe
 
   if (pending_favored || (max_ct_fuzzing && queued_favored)) {
 
@@ -5183,6 +5302,7 @@ static u8 fuzz_one(char** argv) {
   /* run to populate the raw_trace_bits */
   write_to_testcase(in_buf, queue_cur->len);
   run_target(argv, exec_tmout);
+  if (use_mask) memcpy(orig_raw_trace, raw_trace_bits, MAP_SIZE);
 
   /* Computing staleness */
   if ( max_ct_fuzzing && queue_cur->favored) {
@@ -5316,26 +5436,131 @@ static u8 fuzz_one(char** argv) {
 
   memcpy(out_buf, in_buf, len);
 
+  /*******************
+   * MASK ALLOCATION *
+   *******************/
+
+  if (!use_mask){
+      mask = alloc_mask(len + 1);
+      orig_mask = alloc_mask(len + 1);
+  } else {
+      mask = ck_alloc(len + 1);
+      orig_mask = ck_alloc(len + 1);
+  }
+  // this will be used to store the valid modifiable positions
+  // in the havoc stage. malloc'ing once to reduce overhead. 
+  position_map = ck_alloc(sizeof(u32) * (len+1));
+
   /*********************
    * PERFORMANCE SCORE *
    *********************/
 
   orig_perf = perf_score = calculate_score(queue_cur);
 
+
+
+
   /* Skip right away if -d is given, if we have done deterministic fuzzing on
      this entry ourselves (was_fuzzed), or if it has gone through deterministic
      testing in earlier, resumed runs (passed_det). */
 
-  if (skip_deterministic || queue_cur->was_fuzzed || queue_cur->passed_det)
+  if (!use_mask && (skip_deterministic || queue_cur->was_fuzzed || queue_cur->passed_det))
     goto havoc_stage;
 
   /* Skip deterministic fuzzing if exec path checksum puts this out of scope
      for this master instance. */
 
-  if (master_max && (queue_cur->exec_cksum % master_max) != master_id - 1)
+  if (!use_mask && master_max && (queue_cur->exec_cksum % master_max) != master_id - 1)
     goto havoc_stage;
 
+
+ 
+
+
+
+  /********************************************
+   * MASK CONSTRUCTION
+   ********************************************/
+  /* @RB@ also figure out add/delete map in this stage */
+  if (use_mask){
+    DEBUG("Using mask\n");
+    // buffer to clobber with new things
+    u8* tmp_buf = ck_alloc(len+1);
+    memcpy(tmp_buf, out_buf, len);
+
+    // check if we can delete this byte
+    stage_short = "maskmod8";
+    for (stage_cur = 0; stage_cur < len; stage_cur++) {
+      /* modify current byte */
+      stage_cur_byte = stage_cur;
+      u8 orig_byte = out_buf[stage_cur];
+      tmp_buf[stage_cur] = UR(256);
+
+      if (common_fuzz_stuff(argv, tmp_buf, len)) goto abandon_entry;
+
+      tmp_buf[stage_cur] = orig_byte;
+
+      /* if even with this byte deleted we hit the branch, can delete here */
+      if (retains_max(orig_raw_trace)){
+        mask[stage_cur] += 1;
+       }
+      }
+
+    // check if we can delete this byte
+    stage_short = "maskrem8";
+    for (stage_cur = 0; stage_cur < len; stage_cur++) {
+      /* delete current byte */
+      stage_cur_byte = stage_cur;
+    
+      /* head */
+      memcpy(tmp_buf, out_buf, stage_cur);
+      /* tail */
+      memcpy(tmp_buf + stage_cur, out_buf + 1 + stage_cur, len - stage_cur - 1 );
+
+      if (common_fuzz_stuff(argv, tmp_buf, len - 1)) goto abandon_entry;
+
+      /* if even with this byte deleted we hit the branch, can delete here */
+      if (retains_max(orig_raw_trace)){
+        mask[stage_cur] += 2;
+      }
+    }
+
+    // check if we can add at this byte
+    stage_short = "maskadd8";
+    for (stage_cur = 0; stage_cur <= len; stage_cur++) {
+      /* add random byte */
+      stage_cur_byte = stage_cur;
+      /* head */
+      memcpy(tmp_buf, out_buf, stage_cur);
+      tmp_buf[stage_cur] = UR(256);
+      /* tail */
+      memcpy(tmp_buf + stage_cur + 1, out_buf + stage_cur, len - stage_cur);
+
+      if (common_fuzz_stuff(argv, tmp_buf, len + 1)) goto abandon_entry;
+
+      /* if adding before still hit branch, can add */
+      if (retains_max(orig_raw_trace)){
+        mask[stage_cur] += 4;
+      }
+
+    }
+
+    ck_free(tmp_buf);
+    // save the original branch mask for after the havoc stage 
+    memcpy (orig_mask, mask, len + 1);
+
+    DEBUG("mask:\n");
+    for (int k = 0 ; k < len + 1; k ++){
+      DEBUG("%d ", mask[k]);
+    }
+    DEBUG("\n");
+  }
+
+
+  if (skip_deterministic) goto havoc_stage;  
+
   doing_det = 1;
+
 
   /*********************************************
    * SIMPLE BITFLIP (+dictionary construction) *
@@ -5443,63 +5668,6 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP1]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP1] += stage_max;
 
-  /* Two walking bits. */
-
-  stage_name  = "bitflip 2/1";
-  stage_short = "flip2";
-  stage_max   = (len << 3) - 1;
-
-  orig_hit_cnt = new_hit_cnt;
-
-  for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
-
-    stage_cur_byte = stage_cur >> 3;
-
-    FLIP_BIT(out_buf, stage_cur);
-    FLIP_BIT(out_buf, stage_cur + 1);
-
-    if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
-
-    FLIP_BIT(out_buf, stage_cur);
-    FLIP_BIT(out_buf, stage_cur + 1);
-
-  }
-
-  new_hit_cnt = queued_paths + unique_crashes;
-
-  stage_finds[STAGE_FLIP2]  += new_hit_cnt - orig_hit_cnt;
-  stage_cycles[STAGE_FLIP2] += stage_max;
-
-  /* Four walking bits. */
-
-  stage_name  = "bitflip 4/1";
-  stage_short = "flip4";
-  stage_max   = (len << 3) - 3;
-
-  orig_hit_cnt = new_hit_cnt;
-
-  for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
-
-    stage_cur_byte = stage_cur >> 3;
-
-    FLIP_BIT(out_buf, stage_cur);
-    FLIP_BIT(out_buf, stage_cur + 1);
-    FLIP_BIT(out_buf, stage_cur + 2);
-    FLIP_BIT(out_buf, stage_cur + 3);
-
-    if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
-
-    FLIP_BIT(out_buf, stage_cur);
-    FLIP_BIT(out_buf, stage_cur + 1);
-    FLIP_BIT(out_buf, stage_cur + 2);
-    FLIP_BIT(out_buf, stage_cur + 3);
-
-  }
-
-  new_hit_cnt = queued_paths + unique_crashes;
-
-  stage_finds[STAGE_FLIP4]  += new_hit_cnt - orig_hit_cnt;
-  stage_cycles[STAGE_FLIP4] += stage_max;
 
   /* Effector map setup. These macros calculate:
 
@@ -5553,18 +5721,10 @@ static u8 fuzz_one(char** argv) {
       /* If in dumb mode or if the file is very short, just flag everything
          without wasting time on checksums. */
 
-      if (!dumb_mode && len >= EFF_MIN_LEN){
-        if (max_ct_fuzzing) 
-          cksum = hash32(raw_trace_bits, MAP_SIZE, HASH_CONST);
-        else
-          cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
-      }
-      else{
-        if (max_ct_fuzzing) 
-          cksum = ~queue_cur->counts_cksum;
-        else
-          cksum = ~queue_cur->exec_cksum;
-      }
+      if (!dumb_mode && len >= EFF_MIN_LEN)
+        cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+      else
+        cksum = ~queue_cur->exec_cksum;
 
       if ( (!max_ct_fuzzing && (cksum != queue_cur->exec_cksum)) ||
            (max_ct_fuzzing && (cksum != queue_cur->counts_cksum))) {
@@ -5602,6 +5762,95 @@ static u8 fuzz_one(char** argv) {
   stage_finds[STAGE_FLIP8]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP8] += stage_max;
 
+
+  /* Two walking bits. */
+
+  stage_name  = "bitflip 2/1";
+  stage_short = "flip2";
+  stage_max   = (len << 3) - 1;
+
+  orig_hit_cnt = new_hit_cnt;
+
+  for (stage_cur = 0; stage_cur < (len << 3) - 1; stage_cur++) {
+
+    stage_cur_byte = stage_cur >> 3;
+
+    if (use_mask){
+      // only run modified case if it won't produce garbage
+
+      if (!(mask[stage_cur_byte] & 1)) {
+        stage_max--;
+        continue;
+      }
+
+      // if we're spilling into next byte, check that that byte can
+      // be modified
+      if ((stage_cur_byte != ((stage_cur + 1)>> 3))&& (!(mask[stage_cur_byte + 1] & 1))){
+        stage_max--;
+        continue;
+      }
+    }
+
+    FLIP_BIT(out_buf, stage_cur);
+    FLIP_BIT(out_buf, stage_cur + 1);
+
+    if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+
+    FLIP_BIT(out_buf, stage_cur);
+    FLIP_BIT(out_buf, stage_cur + 1);
+
+  }
+
+  new_hit_cnt = queued_paths + unique_crashes;
+
+  stage_finds[STAGE_FLIP2]  += new_hit_cnt - orig_hit_cnt;
+  stage_cycles[STAGE_FLIP2] += stage_max;
+
+  /* Four walking bits. */
+
+  stage_name  = "bitflip 4/1";
+  stage_short = "flip4";
+  stage_max   = (len << 3) - 3;
+
+  orig_hit_cnt = new_hit_cnt;
+
+  for (stage_cur = 0; stage_cur < (len << 3) - 3; stage_cur++) {
+
+    stage_cur_byte = stage_cur >> 3;
+
+    if (use_mask){ // only run modified case if it won't produce garbage
+      if (!(mask[stage_cur_byte] & 1)) {
+        stage_max--;
+        continue;
+      }
+
+      // if we're spilling into next byte, check that that byte can
+      // be modified
+      if ((stage_cur_byte != ((stage_cur + 3)>> 3))&& (!(mask[stage_cur_byte + 1] & 1))){
+        stage_max--;
+        continue;
+      }
+    }
+
+    FLIP_BIT(out_buf, stage_cur);
+    FLIP_BIT(out_buf, stage_cur + 1);
+    FLIP_BIT(out_buf, stage_cur + 2);
+    FLIP_BIT(out_buf, stage_cur + 3);
+
+    if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+
+    FLIP_BIT(out_buf, stage_cur);
+    FLIP_BIT(out_buf, stage_cur + 1);
+    FLIP_BIT(out_buf, stage_cur + 2);
+    FLIP_BIT(out_buf, stage_cur + 3);
+
+  }
+
+  new_hit_cnt = queued_paths + unique_crashes;
+
+  stage_finds[STAGE_FLIP4]  += new_hit_cnt - orig_hit_cnt;
+  stage_cycles[STAGE_FLIP4] += stage_max;
+
   /* Two walking bytes. */
 
   if (len < 2) goto skip_bitflip;
@@ -5620,6 +5869,14 @@ static u8 fuzz_one(char** argv) {
     if (!eff_map[EFF_APOS(i)] && !eff_map[EFF_APOS(i + 1)]) {
       stage_max--;
       continue;
+    }
+
+    if (use_mask){
+      // skip if either byte will modify 
+      if (!(mask[i] & 1) || !(mask[i+1] & 1) ){
+        stage_max--;
+        continue;
+      }
     }
 
     stage_cur_byte = i;
@@ -5657,6 +5914,16 @@ static u8 fuzz_one(char** argv) {
         !eff_map[EFF_APOS(i + 2)] && !eff_map[EFF_APOS(i + 3)]) {
       stage_max--;
       continue;
+    }
+
+
+    if (use_mask){
+      // skip if either byte will modify the branch
+      if (!(mask[i] & 1) || !(mask[i+1]& 1) ||
+            !(mask[i+2]& 1) || !(mask[i+3]& 1) ){
+        stage_max--;
+        continue;
+      }
     }
 
     stage_cur_byte = i;
@@ -5703,6 +5970,13 @@ skip_bitflip:
     if (!eff_map[EFF_APOS(i)]) {
       stage_max -= 2 * ARITH_MAX;
       continue;
+    }
+
+    if (use_mask){
+      if (!(mask[i]& 1) ){
+        stage_max -= 2 * ARITH_MAX;
+        continue;
+      }
     }
 
     stage_cur_byte = i;
@@ -5767,6 +6041,13 @@ skip_bitflip:
     if (!eff_map[EFF_APOS(i)] && !eff_map[EFF_APOS(i + 1)]) {
       stage_max -= 4 * ARITH_MAX;
       continue;
+    }
+
+    if (use_mask){
+      if (!(mask[i] & 1) || !(mask[i+1] & 1)){
+        stage_max -= 4 * ARITH_MAX;
+        continue;
+      }
     }
 
     stage_cur_byte = i;
@@ -5862,6 +6143,15 @@ skip_bitflip:
         !eff_map[EFF_APOS(i + 2)] && !eff_map[EFF_APOS(i + 3)]) {
       stage_max -= 4 * ARITH_MAX;
       continue;
+    }
+
+    if (use_mask){
+      // skip if either byte will modify the branch
+      if (!(mask[i] & 1) || !(mask[i+1]& 1) ||
+            !(mask[i+2]& 1) || !(mask[i+3]& 1)){
+        stage_max -= 4 * ARITH_MAX;
+        continue;
+      }
     }
 
     stage_cur_byte = i;
@@ -5961,6 +6251,13 @@ skip_arith:
       continue;
     }
 
+    if (use_mask ){
+      if (!(mask[i]& 1)){
+        stage_max -= sizeof(interesting_8);
+        continue;
+      }
+    }
+
     stage_cur_byte = i;
 
     for (j = 0; j < sizeof(interesting_8); j++) {
@@ -6011,6 +6308,16 @@ skip_arith:
       stage_max -= sizeof(interesting_16);
       continue;
     }
+
+
+    if (use_mask ){
+      // skip if either byte will modify the branch
+      if (!(mask[i] & 1) || !(mask[i+1] & 1)){
+        stage_max -= sizeof(interesting_16);
+        continue;
+      }
+    }
+
 
     stage_cur_byte = i;
 
@@ -6079,6 +6386,15 @@ skip_arith:
         !eff_map[EFF_APOS(i + 2)] && !eff_map[EFF_APOS(i + 3)]) {
       stage_max -= sizeof(interesting_32) >> 1;
       continue;
+    }
+
+    if (use_mask){
+      // skip if any byte will modify the branch
+      if (!(mask[i] & 1) || !(mask[i+1]& 1) ||
+            !(mask[i+2]& 1) || !(mask[i+3]& 1)){
+        stage_max -= sizeof(interesting_32) >> 1;
+        continue;
+      }
     }
 
     stage_cur_byte = i;
@@ -6171,7 +6487,22 @@ skip_interest:
 
         stage_max--;
         continue;
+      }
+ 
+      if (use_mask ){
+      // if any fall outside the mask, skip
+        int bailing = 0;
+        for (int ii = 0; ii < extras[j].len; ii ++){
+          if (!(mask[i + ii] & 1)){
+            bailing = 1;
+            break;
+          }
 
+        }
+        if (bailing){
+          stage_max--;
+          continue;
+        }        
       }
 
       last_len = extras[j].len;
@@ -6204,6 +6535,7 @@ skip_interest:
 
   ex_tmp = ck_alloc(len + MAX_DICT_FILE);
 
+
   for (i = 0; i <= len; i++) {
 
     stage_cur_byte = i;
@@ -6212,6 +6544,13 @@ skip_interest:
 
       if (len + extras[j].len > MAX_FILE) {
         stage_max--; 
+        continue;
+      }
+
+
+      // consult insert map....
+      if (use_mask && !(mask[i] & 4) ){
+        stage_max--;
         continue;
       }
 
@@ -6272,6 +6611,22 @@ skip_user_extras:
         stage_max--;
         continue;
 
+      }
+
+      // if any fall outside the mask, skip
+      if (use_mask){ 
+        int bailing = 0;
+        for (int ii = 0; ii < a_extras[j].len; ii ++){
+          if (!(mask[i + ii] & 1)){
+            bailing = 1;
+            break;
+          }
+
+        }
+        if (bailing){
+          stage_max--;
+          continue;
+        }        
       }
 
       last_len = a_extras[j].len;
@@ -6346,6 +6701,7 @@ havoc_stage:
   for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
 
     u32 use_stacking = 1 << (1 + UR(HAVOC_STACK_POW2));
+    u32 posn;
 
     stage_cur_val = use_stacking;
  
@@ -6357,14 +6713,18 @@ havoc_stage:
 
           /* Flip a single bit somewhere. Spooky! */
 
-          FLIP_BIT(out_buf, UR(temp_len << 3));
+          if((posn = get_random_modifiable_posn(1, 1, temp_len, mask, position_map)) == 0xffffffff) break;
+          FLIP_BIT(out_buf, posn);
+
           break;
 
         case 1: 
 
           /* Set byte to interesting value. */
 
-          out_buf[UR(temp_len)] = interesting_8[UR(sizeof(interesting_8))];
+          if((posn = get_random_modifiable_posn(8, 1, temp_len, mask, position_map)) == 0xffffffff) break;
+          out_buf[posn] = interesting_8[UR(sizeof(interesting_8))];
+
           break;
 
         case 2:
@@ -6373,14 +6733,16 @@ havoc_stage:
 
           if (temp_len < 2) break;
 
+          if((posn = get_random_modifiable_posn(16, 1, temp_len, mask, position_map)) == 0xffffffff) break;
           if (UR(2)) {
 
-            *(u16*)(out_buf + UR(temp_len - 1)) =
+            *(u16*)(out_buf + posn) =
+
               interesting_16[UR(sizeof(interesting_16) >> 1)];
 
           } else {
 
-            *(u16*)(out_buf + UR(temp_len - 1)) = SWAP16(
+            *(u16*)(out_buf + posn) = SWAP16(
               interesting_16[UR(sizeof(interesting_16) >> 1)]);
 
           }
@@ -6393,14 +6755,16 @@ havoc_stage:
 
           if (temp_len < 4) break;
 
+          if((posn = get_random_modifiable_posn(32, 1, temp_len, mask, position_map)) == 0xffffffff) break;
           if (UR(2)) {
   
-            *(u32*)(out_buf + UR(temp_len - 3)) =
+            *(u32*)(out_buf + posn) =
               interesting_32[UR(sizeof(interesting_32) >> 2)];
 
           } else {
 
-            *(u32*)(out_buf + UR(temp_len - 3)) = SWAP32(
+
+            *(u32*)(out_buf + posn) = SWAP32(
               interesting_32[UR(sizeof(interesting_32) >> 2)]);
 
           }
@@ -6411,14 +6775,17 @@ havoc_stage:
 
           /* Randomly subtract from byte. */
 
-          out_buf[UR(temp_len)] -= 1 + UR(ARITH_MAX);
+          if((posn = get_random_modifiable_posn(8, 1, temp_len, mask, position_map)) == 0xffffffff) break;
+          out_buf[posn] -= 1 + UR(ARITH_MAX);
+
           break;
 
         case 5:
 
           /* Randomly add to byte. */
 
-          out_buf[UR(temp_len)] += 1 + UR(ARITH_MAX);
+          if((posn = get_random_modifiable_posn(8, 1, temp_len, mask, position_map)) == 0xffffffff) break;
+          out_buf[posn] += 1 + UR(ARITH_MAX);
           break;
 
         case 6:
@@ -6427,19 +6794,18 @@ havoc_stage:
 
           if (temp_len < 2) break;
 
+          if((posn = get_random_modifiable_posn(16, 1, temp_len, mask, position_map)) == 0xffffffff) break;
+
           if (UR(2)) {
 
-            u32 pos = UR(temp_len - 1);
-
-            *(u16*)(out_buf + pos) -= 1 + UR(ARITH_MAX);
+            *(u16*)(out_buf + posn) -= 1 + UR(ARITH_MAX);
 
           } else {
-
-            u32 pos = UR(temp_len - 1);
+    
             u16 num = 1 + UR(ARITH_MAX);
 
-            *(u16*)(out_buf + pos) =
-              SWAP16(SWAP16(*(u16*)(out_buf + pos)) - num);
+            *(u16*)(out_buf + posn) =
+              SWAP16(SWAP16(*(u16*)(out_buf + posn)) - num);
 
           }
 
@@ -6451,19 +6817,19 @@ havoc_stage:
 
           if (temp_len < 2) break;
 
+          if((posn = get_random_modifiable_posn(16, 1, temp_len, mask, position_map)) == 0xffffffff) break;
+
           if (UR(2)) {
 
-            u32 pos = UR(temp_len - 1);
-
-            *(u16*)(out_buf + pos) += 1 + UR(ARITH_MAX);
+            *(u16*)(out_buf + posn) += 1 + UR(ARITH_MAX);
 
           } else {
 
-            u32 pos = UR(temp_len - 1);
             u16 num = 1 + UR(ARITH_MAX);
 
-            *(u16*)(out_buf + pos) =
-              SWAP16(SWAP16(*(u16*)(out_buf + pos)) + num);
+            *(u16*)(out_buf + posn) =
+              SWAP16(SWAP16(*(u16*)(out_buf + posn)) + num);
+
 
           }
 
@@ -6475,19 +6841,18 @@ havoc_stage:
 
           if (temp_len < 4) break;
 
+          if((posn = get_random_modifiable_posn(32, 1, temp_len, mask, position_map)) == 0xffffffff) break;
+
           if (UR(2)) {
 
-            u32 pos = UR(temp_len - 3);
-
-            *(u32*)(out_buf + pos) -= 1 + UR(ARITH_MAX);
+            *(u32*)(out_buf + posn) -= 1 + UR(ARITH_MAX);
 
           } else {
 
-            u32 pos = UR(temp_len - 3);
             u32 num = 1 + UR(ARITH_MAX);
 
-            *(u32*)(out_buf + pos) =
-              SWAP32(SWAP32(*(u32*)(out_buf + pos)) - num);
+            *(u32*)(out_buf + posn) =
+              SWAP32(SWAP32(*(u32*)(out_buf + posn)) - num);
 
           }
 
@@ -6499,19 +6864,19 @@ havoc_stage:
 
           if (temp_len < 4) break;
 
+          if((posn = get_random_modifiable_posn(32, 1, temp_len, mask, position_map)) == 0xffffffff) break;
+
           if (UR(2)) {
 
-            u32 pos = UR(temp_len - 3);
-
-            *(u32*)(out_buf + pos) += 1 + UR(ARITH_MAX);
+            *(u32*)(out_buf + posn) += 1 + UR(ARITH_MAX);
 
           } else {
 
-            u32 pos = UR(temp_len - 3);
             u32 num = 1 + UR(ARITH_MAX);
 
-            *(u32*)(out_buf + pos) =
-              SWAP32(SWAP32(*(u32*)(out_buf + pos)) + num);
+            *(u32*)(out_buf + posn) =
+              SWAP32(SWAP32(*(u32*)(out_buf + posn)) + num);
+
 
           }
 
@@ -6523,11 +6888,13 @@ havoc_stage:
              why not. We use XOR with 1-255 to eliminate the
              possibility of a no-op. */
 
-          out_buf[UR(temp_len)] ^= 1 + UR(255);
+          if((posn = get_random_modifiable_posn(8, 1, temp_len, mask, position_map)) == 0xffffffff) break;
+          out_buf[posn] ^= 1 + UR(255);
           break;
 
-        case 11 ... 12: {
 
+        case 11 ... 12: {
+            
             /* Delete bytes. We're making this a bit more likely
                than insertion (the next option) in hopes of keeping
                files reasonably small. */
@@ -6540,10 +6907,16 @@ havoc_stage:
 
             del_len = choose_block_len(temp_len - 1);
 
-            del_from = UR(temp_len - del_len + 1);
+            del_from = get_random_modifiable_posn(del_len*8, 2, temp_len, mask, position_map);
+            if (del_from == 0xffffffff) break;
 
             memmove(out_buf + del_from, out_buf + del_from + del_len,
                     temp_len - del_from - del_len);
+            // remove that data from the branch mask
+            // the +1 copies over the last part of mask
+            memmove(mask + del_from, mask + del_from + del_len,
+                    temp_len - del_from - del_len + 1);
+
 
             temp_len -= del_len;
 
@@ -6552,14 +6925,14 @@ havoc_stage:
           }
 
         case 13:
-
+          
           if (temp_len + HAVOC_BLK_XL < MAX_FILE) {
-
             /* Clone bytes (75%) or insert a block of constant bytes (25%). */
-
-            u8  actually_clone = UR(4);
+  
+            u8 actually_clone = UR(4);
             u32 clone_from, clone_to, clone_len;
             u8* new_buf;
+            u8* new_mask; 
 
             if (actually_clone) {
 
@@ -6567,19 +6940,20 @@ havoc_stage:
               clone_from = UR(temp_len - clone_len + 1);
 
             } else {
-
-              clone_len = choose_block_len(HAVOC_BLK_XL);
+              clone_len = choose_block_len(HAVOC_BLK_LARGE);
               clone_from = 0;
-
             }
 
-            clone_to   = UR(temp_len);
+            clone_to   = get_random_insert_posn(temp_len, mask, position_map);
+   
+            if (clone_to == 0xffffffff) break; // this shouldn't happen, probably...
 
             new_buf = ck_alloc_nozero(temp_len + clone_len);
+            new_mask = alloc_mask(temp_len + clone_len + 1);
 
             /* Head */
-
             memcpy(new_buf, out_buf, clone_to);
+            memcpy(new_mask, mask, clone_to);
 
             /* Inserted part */
 
@@ -6592,11 +6966,20 @@ havoc_stage:
             /* Tail */
             memcpy(new_buf + clone_to + clone_len, out_buf + clone_to,
                    temp_len - clone_to);
+            memcpy(new_mask + clone_to + clone_len, mask + clone_to,
+                   temp_len - clone_to + 1);
 
             ck_free(out_buf);
+            ck_free(mask);
+
             out_buf = new_buf;
+            mask = new_mask;
+
             temp_len += clone_len;
 
+            position_map = ck_realloc(position_map, sizeof (u32) * (temp_len + 1));
+            if (!position_map)
+              PFATAL("Failure resizing position_map.\n");
           }
 
           break;
@@ -6613,7 +6996,11 @@ havoc_stage:
             copy_len  = choose_block_len(temp_len - 1);
 
             copy_from = UR(temp_len - copy_len + 1);
-            copy_to   = UR(temp_len - copy_len + 1);
+
+            copy_to   = get_random_modifiable_posn(copy_len * 8, 1, temp_len, mask, position_map);
+
+            if (copy_to == 0xffffffff) break;
+
 
             if (UR(4)) {
 
@@ -6645,7 +7032,9 @@ havoc_stage:
 
               if (extra_len > temp_len) break;
 
-              insert_at = UR(temp_len - extra_len + 1);
+              insert_at = get_random_modifiable_posn(extra_len * 8, 1, temp_len, mask, position_map);
+              if (insert_at == 0xffffffff) break;
+
               memcpy(out_buf + insert_at, a_extras[use_extra].data, extra_len);
 
             } else {
@@ -6658,7 +7047,10 @@ havoc_stage:
 
               if (extra_len > temp_len) break;
 
-              insert_at = UR(temp_len - extra_len + 1);
+
+              insert_at = get_random_modifiable_posn(extra_len * 8, 1, temp_len, mask, position_map);
+              if (insert_at == 0xffffffff) break;
+
               memcpy(out_buf + insert_at, extras[use_extra].data, extra_len);
 
             }
@@ -6669,8 +7061,9 @@ havoc_stage:
 
         case 16: {
 
-            u32 use_extra, extra_len, insert_at = UR(temp_len + 1);
-            u8* new_buf;
+            u32 use_extra, extra_len, insert_at = get_random_insert_posn(temp_len, mask, position_map);
+             if (insert_at == 0xffffffff) break;
+            u8* new_buf, * new_mask;
 
             /* Insert an extra. Do the same dice-rolling stuff as for the
                previous case. */
@@ -6679,13 +7072,15 @@ havoc_stage:
 
               use_extra = UR(a_extras_cnt);
               extra_len = a_extras[use_extra].len;
-
+  
               if (temp_len + extra_len >= MAX_FILE) break;
 
               new_buf = ck_alloc_nozero(temp_len + extra_len);
+              new_mask = alloc_mask(temp_len + extra_len + 1);
 
               /* Head */
               memcpy(new_buf, out_buf, insert_at);
+              memcpy(new_mask, mask, insert_at);
 
               /* Inserted part */
               memcpy(new_buf + insert_at, a_extras[use_extra].data, extra_len);
@@ -6699,8 +7094,13 @@ havoc_stage:
 
               new_buf = ck_alloc_nozero(temp_len + extra_len);
 
+              new_mask = alloc_mask(temp_len + extra_len + 1);
+
+
               /* Head */
               memcpy(new_buf, out_buf, insert_at);
+              memcpy(new_mask, mask, insert_at);
+
 
               /* Inserted part */
               memcpy(new_buf + insert_at, extras[use_extra].data, extra_len);
@@ -6711,9 +7111,19 @@ havoc_stage:
             memcpy(new_buf + insert_at + extra_len, out_buf + insert_at,
                    temp_len - insert_at);
 
+            memcpy(new_mask + insert_at + extra_len, mask + insert_at,
+                   temp_len - insert_at + 1);
+
             ck_free(out_buf);
+            ck_free(mask);
+            mask = new_mask;
+
             out_buf   = new_buf;
             temp_len += extra_len;
+
+            position_map = ck_realloc(position_map, sizeof (u32) * (temp_len + 1));
+            if (!position_map)
+              PFATAL("Failure resizing position_map.\n");
 
             break;
 
@@ -6728,10 +7138,18 @@ havoc_stage:
 
     /* out_buf might have been mangled a bit, so let's restore it to its
        original size and shape. */
-
-    if (temp_len < len) out_buf = ck_realloc(out_buf, len);
+    if (temp_len < len) {
+      out_buf = ck_realloc(out_buf, len);
+      mask = ck_realloc(mask, len + 1);
+      position_map = ck_realloc(position_map, sizeof (u32) * (len + 1));
+      if (!position_map)
+        PFATAL("Failure resizing position_map.\n");
+    }
     temp_len = len;
     memcpy(out_buf, in_buf, len);
+    memcpy(mask, orig_mask, len + 1);
+
+
 
     /* If we're finding new stuff, let's run for a bit longer, limits
        permitting. */
@@ -6777,7 +7195,8 @@ retry_splicing:
 
     struct queue_entry* target;
     u32 tid, split_at;
-    u8* new_buf;
+    u8* new_buf, *new_mask;
+
     s32 f_diff, l_diff;
 
     /* First of all, if we've modified in_buf for havoc, let's clean that
@@ -6837,6 +7256,7 @@ retry_splicing:
 
     /* Do the thing. */
 
+
     len = target->len;
     memcpy(new_buf, in_buf, split_at);
     in_buf = new_buf;
@@ -6844,6 +7264,21 @@ retry_splicing:
     ck_free(out_buf);
     out_buf = ck_alloc_nozero(len);
     memcpy(out_buf, in_buf, len);
+
+    // @RB@ handle the branch mask...
+
+    new_mask = alloc_mask(len + 1);
+
+    memcpy(new_mask, mask, MIN(split_at, temp_len + 1));
+    ck_free(mask);
+    mask = new_mask;
+    ck_free(orig_mask);
+    orig_mask = ck_alloc(len +1);
+    //ck_realloc(orig_mask, len + 1);
+    memcpy (orig_mask, mask, len + 1);
+    position_map = ck_realloc(position_map, sizeof (u32) * (len + 1));
+    if (!position_map)
+      PFATAL("Failure resizing position_map.\n");
 
     goto havoc_stage;
 
@@ -6884,8 +7319,13 @@ abandon_entry:
   munmap(orig_in, queue_cur->len);
 
   if (in_buf != orig_in) ck_free(in_buf);
+
+  ck_free(position_map);
   ck_free(out_buf);
   ck_free(eff_map);
+  ck_free(mask);
+  ck_free(orig_mask);
+
 
   return ret_val;
 
