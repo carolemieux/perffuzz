@@ -129,7 +129,8 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            fast_cal,                  /* Try to calibrate faster?         */
            max_ct_fuzzing,            /* Fuzz for maximum counts          */
            half_trace,                /* ... only max on half the trace   */
-           prioritize_less_stale;     /* prioritize by staleness          */
+           prioritize_less_stale,     /* prioritize by staleness          */
+           maximize_overall;          /* maximize the sum of the trace    */
 
 static s32 out_fd,                    /* Persistent fd for out_file       */
            dev_urandom_fd = -1,       /* Persistent fd for /dev/urandom   */
@@ -146,7 +147,7 @@ EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
 EXP_ST u8  raw_trace_bits[MAP_SIZE];  /* PERF - non-bucketed trace bits   */
 EXP_ST u16 max_counts[MAP_SIZE];      /* PERF - keeps track of max value  */
 EXP_ST u32 staleness[MAP_SIZE];       /* PERF - the staleness max values */
-
+EXP_ST u32 max_total;                 /* PERF - maximum sum of raw trace bits */
 
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
@@ -982,11 +983,13 @@ static inline u8 has_new_bits(u8* virgin_map) {
    variable behavior and sometimes causes crashes
    */
 static inline u8 has_new_max() {
-
-  if (!half_trace){
+  u32 total = 0; 
+  if (!half_trace ){
     for (int i = 0; i < MAP_SIZE; i++){
         if (unlikely(raw_trace_bits[i])){
-          if (unlikely(raw_trace_bits[i] > max_counts[i])) {
+          if (maximize_overall){
+             total += raw_trace_bits[i];
+          } else if (unlikely(raw_trace_bits[i] > max_counts[i])) {
              DEBUG("Achieves count of %d (> %d) at branch %d\n", raw_trace_bits[i], max_counts[i], i);
              return 1;
           }
@@ -998,11 +1001,20 @@ static inline u8 has_new_max() {
     u16 * raw_bits = (u16 *) raw_trace_bits;
     for (int i = MAP_SIZE >> 2; i < (MAP_SIZE >> 1); i++){
         if (unlikely(raw_bits[i])){
-          if (unlikely(raw_bits[i] > max_counts[i])) {
+          if (maximize_overall){
+             total += raw_bits[i];
+          } else if (unlikely(raw_bits[i] > max_counts[i])) {
              DEBUG("Achieves count of %d (> %d) at branch %d\n", raw_bits[i], max_counts[i], i);
              return 1;
           }
         }
+    }
+  }
+
+  if (maximize_overall){
+    if (total > max_total){
+      max_total = total;
+      return 1;
     }
   }
 
@@ -1315,6 +1327,25 @@ static void update_bitmap_score(struct queue_entry* q) {
   }
 
   u16 * u16_raw_trace_bits = (u16 *) raw_trace_bits;
+
+  if (maximize_overall) {
+    u32 total = 0;
+
+    for (i = start; i < end; i++){
+      if (!half_trace) total += raw_trace_bits[i];
+      else total += u16_raw_trace_bits[i];
+    }
+
+    if (total < max_total){
+      return;
+    } else {
+      // this element is for sure going to be covered 
+      // by cull_queue with or without the half trace
+      top_rated[MAP_SIZE >> 2] = q;
+      score_changed = 1;
+      return;
+    }
+  }
 
   /* For every byte set in trace_bits[], see if there is a previous winner,
      and how it compares to us. */
@@ -7994,9 +8025,14 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+sphi:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
+  while ((opt = getopt(argc, argv, "+Osphi:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
 
     switch (opt) {
+
+      case 'O':
+        SAYF("Maximizing overall score...\n");
+        maximize_overall = 1;
+        break;
 
       case 's':
         SAYF("Prioritizing less stale inputs...\n");
