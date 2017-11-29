@@ -145,10 +145,10 @@ static s32 forksrv_pid,               /* PID of the fork server           */
 
 EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
 
-EXP_ST u8  raw_trace_bits[MAP_SIZE];  /* PERF - non-bucketed trace bits   */
-EXP_ST u16 max_counts[MAP_SIZE];      /* PERF - keeps track of max value  */
-EXP_ST u32 staleness[MAP_SIZE];       /* PERF - the staleness max values */
-EXP_ST u32 max_total;                 /* PERF - maximum sum of raw trace bits */
+EXP_ST u32* perf_bits;                /* PERF - SHM with 2nd (perf) map   */
+EXP_ST u32 max_counts[PERF_SIZE];     /* PERF - keeps track of max value  */
+EXP_ST u32 staleness[PERF_SIZE];       /* PERF - the staleness max values */
+EXP_ST u32 max_total;                 /* PERF - maximum sum of raw trace bits */ //TODO: RM
 
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
@@ -1520,8 +1520,12 @@ EXP_ST void setup_shm(void) {
   memset(virgin_tmout, 255, MAP_SIZE);
   memset(virgin_crash, 255, MAP_SIZE);
 
-  //TODO
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+  /* in the case of the max count fuzzing, allocate the performance
+    map right after the regular bitmap.  */
+  if (max_ct_fuzzing)
+   shm_id = shmget(IPC_PRIVATE, MAP_SIZE + (PERF_SIZE * sizeof(u32)), IPC_CREAT | IPC_EXCL | 0600);
+  else
+    shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
 
   if (shm_id < 0) PFATAL("shmget() failed");
 
@@ -1539,6 +1543,8 @@ EXP_ST void setup_shm(void) {
   ck_free(shm_str);
 
   trace_bits = shmat(shm_id, NULL, 0);
+  // setup perf bits if needes
+  if (max_ct_fuzzing) perf_bits = (u32 *) (trace_bits + MAP_SIZE);
   
   if (!trace_bits) PFATAL("shmat() failed");
 
@@ -1546,8 +1552,7 @@ EXP_ST void setup_shm(void) {
 
 /* set the max counts map to 0 */
 EXP_ST void setup_max_counts() {
-  //TODO
-  memset(max_counts, 0, MAP_SIZE);
+  memset(max_counts, 0, PERF_SIZE);
 }
 
 
@@ -2451,8 +2456,8 @@ static u8 run_target(char** argv, u32 timeout) {
      must prevent any earlier operations from venturing into that
      territory. */
 
-  // TODO also memset  PERF_MAP
   memset(trace_bits, 0, MAP_SIZE);
+  if (max_ct_fuzzing) memset(perf_bits, 0, PERF_SIZE * sizeof(u32));
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
@@ -2604,16 +2609,12 @@ static u8 run_target(char** argv, u32 timeout) {
   MEM_BARRIER();
 
   tb4 = *(u32*)trace_bits;
-  // TODO
-  if (max_ct_fuzzing) memcpy(raw_trace_bits, trace_bits, MAP_SIZE);
+  /* this should only bucket the MAP_SIZE part of shmem */
 #ifdef __x86_64__
   classify_counts((u64*)trace_bits);
 #else
   classify_counts((u32*)trace_bits);
 #endif /* ^__x86_64__ */
-
-  // TODO
-  if (half_trace) memset(trace_bits + (MAP_SIZE >> 1), 0, MAP_SIZE >> 1);
 
   prev_timed_out = child_timed_out;
 
@@ -8051,7 +8052,7 @@ int main(int argc, char** argv) {
 
     switch (opt) {
 
-      case 'O':
+      case 'O': // TODO rm
         SAYF("Maximizing overall score...\n");
         maximize_overall = 1;
         break;
@@ -8066,7 +8067,7 @@ int main(int argc, char** argv) {
         max_ct_fuzzing = 1;
         break;
       
-      case 'h':
+      case 'h': // TODO rm
         SAYF("Max count on only 1/2 of input trace...\n");
         half_trace = 1;
         break;
