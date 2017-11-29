@@ -983,31 +983,16 @@ static inline u8 has_new_bits(u8* virgin_map) {
    variable behavior and sometimes causes crashes
    */
 static inline u8 has_new_max() {
-  // TODO
-  u32 total = 0; 
-  if (!half_trace ){
-    for (int i = 0; i < MAP_SIZE; i++){
-        if (unlikely(raw_trace_bits[i])){
-          if (unlikely(raw_trace_bits[i] > max_counts[i])) {
-             DEBUG("Achieves count of %d (> %d) at branch %d\n", raw_trace_bits[i], max_counts[i], i);
-             return 1;
-          }
-        }
-    }
-  }
 
-  else {
-    u16 * raw_bits = (u16 *) raw_trace_bits;
-    for (int i = MAP_SIZE >> 2; i < (MAP_SIZE >> 1); i++){
-        if (unlikely(raw_bits[i])){
-          if (unlikely(raw_bits[i] > max_counts[i])) {
-             DEBUG("Achieves count of %d (> %d) at branch %d\n", raw_bits[i], max_counts[i], i);
-             return 1;
-          }
+  for (int i = 0; i < PERF_SIZE; i++){
+      if (unlikely(perf_bits[i])){
+        if (unlikely(perf_bits[i] > max_counts[i])) {
+           DEBUG("Achieves count of %d (> %d) at branch %d\n", perf_bits[i], max_counts[i], i);
+           return 1;
         }
-    }
+      }
   }
-
+  
   return 0;
 
 }
@@ -3284,9 +3269,10 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   if (fault == crash_mode) {
 
     /* Keep only if there are new bits in the map, add to queue for
-       future fuzzing, etc. */
+       future fuzzing, etc. PERF: also keep if there is a new max*/
+
     u8 hnm;
-    if (max_ct_fuzzing) hnm = has_new_max();
+    if (max_ct_fuzzing) hnm = has_new_max(); // are there some subtleties here of when the max should be set? TODO
 
     if (!(hnb = has_new_bits(virgin_bits)) && (!max_ct_fuzzing || !hnm)) {
       if (crash_mode) total_crashes++;
@@ -3315,7 +3301,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     }
 
     queue_top->exec_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
-    if (max_ct_fuzzing) queue_top->perf_cksum = hash32(raw_trace_bits, MAP_SIZE, HASH_CONST);
+    if (max_ct_fuzzing) 
+      q->perf_cksum = hash32(perf_bits, PERF_SIZE*sizeof(u32), HASH_CONST); 
 
     /* Try to calibrate inline; this also calls update_bitmap_score() when
        successful. */
