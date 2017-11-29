@@ -52,6 +52,11 @@
 u8  __afl_area_initial[MAP_SIZE];
 u8* __afl_area_ptr = __afl_area_initial;
 
+
+/* Similarly we have a map for performance counters */
+u32  __afl_perf_initial[PERF_SIZE];
+u32* __afl_perf_ptr = __afl_perf_initial;
+
 __thread u32 __afl_prev_loc;
 
 
@@ -84,6 +89,10 @@ static void __afl_map_shm(void) {
        our parent doesn't give up on us. */
 
     __afl_area_ptr[0] = 1;
+
+
+    /* Set perf pointer to be just after the trace bits map */
+    __afl_perf_ptr = &__afl_area_ptr[MAP_SIZE];
 
   }
 

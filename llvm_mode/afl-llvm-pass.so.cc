@@ -99,10 +99,16 @@ bool AFLCoverage::runOnModule(Module &M) {
   GlobalVariable *AFLMapPtr =
       new GlobalVariable(M, PointerType::get(Int8Ty, 0), false,
                          GlobalValue::ExternalLinkage, 0, "__afl_area_ptr");
+  
+  GlobalVariable *AFLPerfPtr =
+      new GlobalVariable(M, PointerType::get(Int32Ty, 0), false,
+                         GlobalValue::ExternalLinkage, 0, "__afl_perf_ptr");
 
   GlobalVariable *AFLPrevLoc = new GlobalVariable(
       M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_prev_loc",
       0, GlobalVariable::GeneralDynamicTLSModel, 0, false);
+
+  ConstantInt* PerfMask = ConstantInt::get(Int32Ty, PERF_SIZE-1);
 
   /* Instrument all the things! */
 
@@ -128,12 +134,20 @@ bool AFLCoverage::runOnModule(Module &M) {
       PrevLoc->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
       Value *PrevLocCasted = IRB.CreateZExt(PrevLoc, IRB.getInt32Ty());
 
+      /* Get edge ID as XOR */
+      Value* EdgeId = IRB.CreateXor(PrevLocCasted, CurLoc);
+
       /* Load SHM pointer */
 
       LoadInst *MapPtr = IRB.CreateLoad(AFLMapPtr);
       MapPtr->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
       Value *MapPtrIdx =
-          IRB.CreateGEP(MapPtr, IRB.CreateXor(PrevLocCasted, CurLoc));
+          IRB.CreateGEP(MapPtr, EdgeId);
+      
+      LoadInst *PerfPtr = IRB.CreateLoad(AFLPerfPtr);
+      PerfPtr->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+      Value *PerfBranchPtr =
+          IRB.CreateGEP(PerfPtr, IRB.CreateAnd(EdgeId, PerfMask));
 
       /* Update bitmap */
 
@@ -141,6 +155,20 @@ bool AFLCoverage::runOnModule(Module &M) {
       Counter->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
       Value *Incr = IRB.CreateAdd(Counter, ConstantInt::get(Int8Ty, 1));
       IRB.CreateStore(Incr, MapPtrIdx)
+          ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+      
+      /* Increment performance counter for branch */
+      LoadInst *PerfBranchCounter = IRB.CreateLoad(PerfBranchPtr);
+      PerfBranchCounter->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+      Value *PerfBranchIncr = IRB.CreateAdd(PerfBranchCounter, ConstantInt::get(Int32Ty, 1));
+      IRB.CreateStore(PerfBranchIncr, PerfBranchPtr)
+          ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+      
+      /* Increment performance counter for total count  */
+      LoadInst *PerfTotalCounter = IRB.CreateLoad(PerfPtr); // Index 0 of the perf map
+      PerfTotalCounter->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+      Value *PerfTotalIncr = IRB.CreateAdd(PerfTotalCounter, ConstantInt::get(Int32Ty, 1));
+      IRB.CreateStore(PerfTotalIncr, PerfPtr)
           ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
       /* Set prev_loc to cur_loc >> 1 */
