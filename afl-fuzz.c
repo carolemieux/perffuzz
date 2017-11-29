@@ -127,7 +127,6 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            run_over10m,               /* Run time over 10 minutes?        */
            persistent_mode,           /* Running in persistent mode?      */
            max_ct_fuzzing,            /* Fuzz for maximum counts          */
-           half_trace,                /* ... only max on half the trace   */
            prioritize_less_stale,     /* prioritize by staleness          */
            deferred_mode,             /* Deferred forkserver mode?        */
            fast_cal;                  /* Try to calibrate faster?         */
@@ -146,9 +145,7 @@ EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
 
 EXP_ST u32* perf_bits;                /* PERF - SHM with 2nd (perf) map   */
 EXP_ST u32 max_counts[PERF_SIZE];     /* PERF - keeps track of max value  */
-EXP_ST u32 staleness[PERF_SIZE];       /* PERF - the staleness max values */
-EXP_ST u32 max_total;                 /* PERF - maximum sum of raw trace bits */ //TODO: RM
-
+EXP_ST u32 staleness[PERF_SIZE];      /* PERF - the staleness max values */
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
@@ -5089,6 +5086,71 @@ static u8 could_be_interest(u32 old_val, u32 new_val, u8 blen, u8 check_le) {
 }
 
 
+static u8 too_stale(){
+
+    u8 maxed_by_input[MAP_SIZE];
+    memset(maxed_by_input, 0, MAP_SIZE);
+
+    /* minimum staleness achieved by current input */
+    u32 my_min_staleness = UINT_MAX;
+
+    /* overall min/max staleness */
+    u32 min_staleness = UINT_MAX;
+    /* start the max at 1 to avoid div by 0 */
+    u32 max_staleness = 1;
+
+
+    /* increment staleness and find my min staleness/overall max staleness */
+    for (u32 k=0; k < PERF_SIZE; k++){
+
+      // if there is a non-zero score at this index.. 
+      if (max_counts[k]){
+
+        /* set new overall max or min staleness */
+        max_staleness = (max_staleness < staleness[k]) ? staleness[k] : max_staleness;
+        min_staleness = (min_staleness > staleness[k]) ? staleness[k] : min_staleness;
+
+        // TODO WAT
+        // log the top rated for this one and the staleness
+        if (top_rated[k])
+          DEBUG("There is a top rated at key %d, val is %d, staleness is %d %s\n", k, max_counts[k], staleness[k],
+           (perf_bits[k] == max_counts[k]) ? "(maxed by me)" : "");
+
+        /* increment staleness for any score that this input hits the max of.
+           If score is increased while fuzzing input, staleness will be set to 0  */
+        if (perf_bits[k] == max_counts[k]){
+
+          my_min_staleness = (staleness[k] < my_min_staleness) ? staleness[k] : my_min_staleness;
+          staleness[k]++;
+          maxed_by_input[k] = 1;
+
+        }
+      }
+    }
+
+    u32 staleness_score = 100 - STALENESS_CONST*(my_min_staleness-min_staleness)/max_staleness;
+
+    DEBUG("my_min_stale: %d, min_stale: %d, max_stale: %d, score: %d\n", my_min_staleness, min_staleness, max_staleness, staleness_score);
+
+    if (staleness_score < UR(100)){
+
+      DEBUG("Skipping because too stale (score: %d, min_stale: %d)\n", staleness_score, min_staleness);
+
+      /* decided to skip the input. remove the increments. */
+      for (u32 k=0; k < PERF_SIZE; k++){
+        if (unlikely(maxed_by_input[k])) {
+          staleness[k]--;
+        }
+      }
+     
+      /* too stale. return 1 */
+      return 1;
+     
+     }
+
+    return 0;
+}
+
 /* Take the current entry from the queue, fuzz it for a while. This
    function is a tad too long... returns 0 if fuzzed successfully, 1 if
    skipped or bailed out. */
@@ -5105,8 +5167,8 @@ static u8 fuzz_one(char** argv) {
   u8  a_collect[MAX_AUTO_EXTRA];
   u32 a_len = 0;
 
-  u16 orig_max_counts[MAP_SIZE];
-  u8 maxed_by_input[MAP_SIZE];
+  u32 orig_max_counts[PERF_SIZE];
+  memcpy(orig_max_counts, max_counts, PERF_SIZE);
 
 #ifdef IGNORE_FINDS
 
@@ -5183,89 +5245,18 @@ static u8 fuzz_one(char** argv) {
    * STALENESS *
    ************/
 
-  /* run to populate the raw_trace_bits */
-  write_to_testcase(in_buf, queue_cur->len);
-  run_target(argv, exec_tmout);
-
   /* Computing staleness */
-  if ( max_ct_fuzzing && queue_cur->favored) {
+  if (max_ct_fuzzing && queue_cur->favored && prioritize_less_stale) {
 
-    memcpy(orig_max_counts, max_counts, MAP_SIZE);
-    memset(maxed_by_input, 0, MAP_SIZE);
-    s32 start = 0;
-    s32 end = MAP_SIZE; 
-    u16 * u16_raw_trace_bits = (u16 *) raw_trace_bits;
-    // start the max at 1 to avoid div by 0 
-    u32 max_staleness = 1;
-    u32 overall_min_stale = 1 << 31;
-    u32 min_staleness = 0;
-    u8 first_in = 1;
-
-    if (half_trace) {
-      start = MAP_SIZE >> 2;
-      end = MAP_SIZE >> 1;
-    }
-
-    /* increment staleness and find my min staleness/overall max staleness */
-    for (s32 k=start; k < end; k++){
-
-      // if there is a non-zero redundancy score at this index.. 
-      if (max_counts[k]){
-        // potentially set a new max stalness
-        max_staleness = (max_staleness < staleness[k]) ? staleness[k] : max_staleness;
-        // and a new min staleness
-        overall_min_stale = (overall_min_stale > staleness[k]) ? staleness[k] : overall_min_stale;
-
-        // log the top rated for this one and the staleness
-        if (half_trace && top_rated[k])
-        DEBUG("There is a top rated for %d, val is %d, staleness is %d %s\n", k, max_counts[k], staleness[k],
-          ((half_trace && (u16_raw_trace_bits[k] == max_counts[k])) || 
-           (!half_trace && (raw_trace_bits[k] == max_counts[k]))) ? "(hit by me)" : "");
-
-        /* increment staleness for any score that this input hits the max of
-           if score is increased while fuzzing input, staleness will be set to 0  */
-        if ((half_trace && (u16_raw_trace_bits[k] == max_counts[k])) || 
-            (!half_trace && (raw_trace_bits[k] == max_counts[k]))) {
-          
-          // set the minimum staleness properly
-          if (first_in) {
-            min_staleness = staleness[k];
-            first_in = 0;
-          }
-          else min_staleness = (staleness[k] < min_staleness) ? staleness[k] : min_staleness;
-
-          staleness[k]++;
-          maxed_by_input[k] = 1;
-
-        }
-
-      }
-    }
-
-
-    /* check if we should skip this input */
-
-    if (prioritize_less_stale) {
-       // if something has 0 staleness we definitely won't skip it. 
-       
-       u32 staleness_score = 100 - STALENESS_CONST*(min_staleness-overall_min_stale)/max_staleness;
-       DEBUG("my_min_stale: %d, min_stale: %d, max_stale: %d, score: %d\n", min_staleness, overall_min_stale, max_staleness, staleness_score);
-
-       if (staleness_score < UR(100)){
-        // decided to skip the input. remove the increments. 
-        for (s32 k=start; k < end; k++){
-          if (maxed_by_input[k]) {
-            staleness[k]--;
-          }
-        }
-        DEBUG("Skipping because too stale (score: %d, min_stale: %d)\n", staleness_score, min_staleness);
-        // we also need to do some memory cleanup since we ran this input. 
-        munmap(orig_in, queue_cur->len);
-        if (in_buf != orig_in) ck_free(in_buf);
-        ck_free(out_buf);
-        return 1;
-       }
-    }
+    /* run to populate the perf_bits */
+    write_to_testcase(in_buf, queue_cur->len);
+    run_target(argv, exec_tmout);
+    if (too_stale()) {
+      munmap(orig_in, queue_cur->len);
+      if (in_buf != orig_in) ck_free(in_buf);
+      ck_free(out_buf);
+      return 1; 
+    } 
 
   }
 
@@ -5551,26 +5542,23 @@ static u8 fuzz_one(char** argv) {
 
     if (!eff_map[EFF_APOS(stage_cur)]) {
 
-      u32 cksum;
+      u32 exec_cksum;
+      u32 perf_cksum;
 
       /* If in dumb mode or if the file is very short, just flag everything
          without wasting time on checksums. */
 
       if (!dumb_mode && len >= EFF_MIN_LEN){
+        exec_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
         if (max_ct_fuzzing) 
-          cksum = hash32(raw_trace_bits, MAP_SIZE, HASH_CONST);
-        else
-          cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
-      }
-      else{
+          perf_cksum = hash32(perf_bits, PERF_SIZE*sizeof(u32), HASH_CONST);
+      } else {
+        exec_cksum = ~queue_cur->exec_cksum;
         if (max_ct_fuzzing) 
-          cksum = ~queue_cur->perf_cksum;
-        else
-          cksum = ~queue_cur->exec_cksum;
+          perf_cksum = ~queue_cur->perf_cksum;
       }
 
-      if ( (!max_ct_fuzzing && (cksum != queue_cur->exec_cksum)) ||
-           (max_ct_fuzzing && (cksum != queue_cur->perf_cksum))) {
+      if ((exec_cksum != queue_cur->exec_cksum) || (max_ct_fuzzing && (perf_cksum != queue_cur->perf_cksum))) {
         eff_map[EFF_APOS(stage_cur)] = 1;
         eff_cnt++;
       }
@@ -6870,17 +6858,16 @@ abandon_entry:
   } 
 
   /* update staleness accordingly */
-  if (max_ct_fuzzing && queue_cur->favored) {
+  if (max_ct_fuzzing && prioritize_less_stale) {
 
     s32 start = 0;
     s32 end = MAP_SIZE; 
 
     for (s32 k=start; k < end; k++)
-      if (maxed_by_input[k])
-        if (max_counts[k] > orig_max_counts[k]){
-          DEBUG("branch %d is not stale\n", k);
-          staleness[k] = 0;
-        }
+      if (max_counts[k] > orig_max_counts[k]){
+        DEBUG("key %d is not stale\n", k);
+        staleness[k] = 0;
+      }
 
   }
 
@@ -8014,11 +8001,6 @@ int main(int argc, char** argv) {
       case 'p':
         SAYF("Max count fuzzing...\n");
         max_ct_fuzzing = 1;
-        break;
-      
-      case 'h': // TODO rm
-        SAYF("Max count on only 1/2 of input trace...\n");
-        half_trace = 1;
         break;
 
       case 'i': /* input dir */
