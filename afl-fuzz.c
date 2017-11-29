@@ -2798,8 +2798,10 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
       } else {
 
         q->exec_cksum = cksum;
-        // TODO
-        if (max_ct_fuzzing) q->perf_cksum = hash32(raw_trace_bits, MAP_SIZE, HASH_CONST); 
+        /* setup the perf cksum here. Assume it is not variable, or that 
+          variability will be detected in the regular checking */ 
+        if (max_ct_fuzzing) 
+          q->perf_cksum = hash32(perf_bits, PERF_SIZE*sizeof(u32), HASH_CONST); 
         memcpy(first_trace, trace_bits, MAP_SIZE);
 
       }
@@ -4658,8 +4660,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
   static u8 tmp[64];
   static u8 clean_trace[MAP_SIZE];
-  static u8 raw_clean_trace[MAP_SIZE];
-  // TODO here as well 
+  static u32 clean_perf[PERF_SIZE];
 
   u8  needs_write = 0, fault = 0;
   u32 trim_exec = 0;
@@ -4696,7 +4697,8 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
     while (remove_pos < q->len) {
 
       u32 trim_avail = MIN(remove_len, q->len - remove_pos);
-      u32 cksum;
+      u32 exec_cksum;
+      u32 perf_cksum;
 
       write_with_gap(in_buf, q->len, remove_pos, trim_avail);
 
@@ -4706,19 +4708,21 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
       if (stop_soon || fault == FAULT_ERROR) goto abort_trimming;
 
       /* Note that we don't keep track of crashes or hangs here; maybe TODO? */
-      if (!max_ct_fuzzing)
-        cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
-      else
-        cksum = hash32(raw_trace_bits, MAP_SIZE, HASH_CONST);
+      if (max_ct_fuzzing)
+        perf_cksum = hash32(perf_bits, PERF_SIZE*sizeof(u32), HASH_CONST);
+      exec_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+
+        
 
 
       /* If the deletion had no impact on the trace, make it permanent. This
          isn't perfect for variable-path inputs, but we're just making a
          best-effort pass, so it's not a big deal if we end up with false
-         negatives every now and then. */
+         negatives every now and then.  PERF: Make sure that the performance
+         details don't change either. */
 
-      if ((!max_ct_fuzzing && (cksum == q->exec_cksum)) ||
-          (max_ct_fuzzing && (cksum == q->perf_cksum))) {
+      if ((exec_cksum == q->exec_cksum) && 
+          (!max_ct_fuzzing || (perf_cksum == q->perf_cksum))) {
 
         u32 move_tail = q->len - remove_pos - trim_avail;
 
@@ -4735,7 +4739,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
           needs_write = 1;
           memcpy(clean_trace, trace_bits, MAP_SIZE);
-          if (max_ct_fuzzing) memcpy(raw_clean_trace, raw_trace_bits, MAP_SIZE); 
+          if (max_ct_fuzzing) memcpy(clean_perf, perf_bits, PERF_SIZE*sizeof(u32)); 
 
         }
 
@@ -4769,7 +4773,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
     close(fd);
 
     memcpy(trace_bits, clean_trace, MAP_SIZE);
-    if (max_ct_fuzzing) memcpy(raw_trace_bits, raw_clean_trace, MAP_SIZE); 
+    if (max_ct_fuzzing) memcpy(clean_perf, perf_bits, PERF_SIZE*sizeof(u32)); 
     update_bitmap_score(q);
 
   }
