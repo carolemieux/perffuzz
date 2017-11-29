@@ -272,8 +272,7 @@ static struct queue_entry *queue,     /* Fuzzing queue (linked list)      */
                           *queue_top, /* Top of the list                  */
                           *q_prev100; /* Previous 100 marker              */
 
-static struct queue_entry*
-  top_rated[MAP_SIZE];                /* Top entries for bitmap bytes     */
+static struct queue_entry** top_rated;/* Top entries for bitmap bytes     */
 
 struct extra_data {
   u8* data;                           /* Dictionary token data            */
@@ -1283,92 +1282,82 @@ static void minimize_bits(u8* dst, u8* src) {
 
    The first step of the process is to maintain a list of top_rated[] entries
    for every byte in the bitmap. We win that slot if there is no previous
-   contender, or if the contender has a more favorable speed x size factor. */
+   contender, or if the contender has a more favorable speed x size factor. 
 
-// PERFTODO: also call when max count is achieved
-// no, don't need to do that.
+   In the case of performance fuzzing, we win if we maximize the count at some
+   key with a non-zero value.   */
+
 static void update_bitmap_score(struct queue_entry* q) {
 
   DEBUG("updating bitmap score for %s\n", q->fname);
   u32 i;
-  u64 fav_factor = q->exec_us * q->len;
 
-  u32 start = 0; 
-  u32 end = MAP_SIZE;
-
-  //TODO
-  if (half_trace) {
-    start = MAP_SIZE >> 2;
-    end = MAP_SIZE >> 1; 
-  }
-
-  u16 * u16_raw_trace_bits = (u16 *) raw_trace_bits;
-
-
-  /* For every byte set in trace_bits[], see if there is a previous winner,
+  /* For every byte set in trace(or perf)_bits[], see if there is a previous winner,
      and how it compares to us. */
-  
-  for (i = start; i < end; i++)
 
-    if ((!max_ct_fuzzing && trace_bits[i]) || (max_ct_fuzzing && !half_trace && raw_trace_bits[i]) || (half_trace && u16_raw_trace_bits[i])) {
-       
-       if (top_rated[i]) {
+  if (max_ct_fuzzing){
 
-        if (!max_ct_fuzzing){
+   /* in the case of max fuzzing, just win if we achieve the max */ 
+   for (i = 0; i < PERF_SIZE; i++)
 
-         /* Faster-executing or smaller test cases are favored. */
-
-         if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue;
-
-         /* Looks like we're going to win. Decrease ref count for the
-            previous winner, discard its trace_bits[] if necessary. */
-
-         if (!--top_rated[i]->tc_ref) {
-           ck_free(top_rated[i]->trace_mini);
-           top_rated[i]->trace_mini = 0;
+      if (perf_bits[i]) {
+         
+         if (top_rated[i]) {
+           perf_bits[i] < max_counts[i] continue;
          }
 
-        } else {
+         /* Insert ourselves as the new winner. */
+         top_rated[i] = q;
 
-          /* in max count mode, test cases hitting max count are favored */
-          if (!half_trace && (raw_trace_bits[i] < max_counts[i])) continue;
-          if (half_trace && (u16_raw_trace_bits[i] < max_counts[i])) continue;
+        /* if we get here, we know that raw_trace_bits[i] >= max_counts[i] */
 
-        }
+         DEBUG("Setting max value for perf key %d to %d\n", i, perf_bits[i]);
+         max_counts[i] = perf_bits[i];
 
-
-       }
-
-       /* Insert ourselves as the new winner. */
-       top_rated[i] = q;
-
-       /* change scores accordingly */
-
-       if (!max_ct_fuzzing){
-               
-          q->tc_ref++;
-
-          if (!q->trace_mini) {
-            q->trace_mini = ck_alloc(MAP_SIZE >> 3);
-            minimize_bits(q->trace_mini, trace_bits);
-          }
-
-       } else {
-
-          /* if we get here, we know that raw_trace_bits[i] >= max_counts[i] */
-          if (!half_trace && (raw_trace_bits[i] > 1))
-            DEBUG("Setting max count for branch %d to %d\n", i, raw_trace_bits[i]);
-          if (half_trace && (u16_raw_trace_bits[i] > 1))
-            DEBUG("Setting max count for branch %d to %d\n", i, u16_raw_trace_bits[i]);
-          max_counts[i] = half_trace ? u16_raw_trace_bits[i]: raw_trace_bits[i];
-
-   
+         score_changed = 1;
 
        }
 
-       score_changed = 1;
+  } else {
 
-     }
+    u64 fav_factor = q->exec_us * q->len;
+
+    for (i = 0; i < MAP_SIZE; i++)
+
+      if (unlikely(trace_bits[i])) {
+         
+         if (top_rated[i]) {
+
+           /* Faster-executing or smaller test cases are favored. */
+
+           if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue;
+
+           /* Looks like we're going to win. Decrease ref count for the
+              previous winner, discard its trace_bits[] if necessary. */
+
+           if (!--top_rated[i]->tc_ref) {
+             ck_free(top_rated[i]->trace_mini);
+             top_rated[i]->trace_mini = 0;
+           }
+
+         }
+
+        /* Insert ourselves as the new winner. */
+        top_rated[i] = q;
+
+        /* change scores accordingly */
+
+        q->tc_ref++;
+
+        if (!q->trace_mini) {
+          q->trace_mini = ck_alloc(MAP_SIZE >> 3);
+          minimize_bits(q->trace_mini, trace_bits);
+         }
+        score_changed = 1;
+
+       }
+
+  }
 
 
 }
@@ -8255,7 +8244,12 @@ int main(int argc, char** argv) {
   setup_post();
   setup_shm();
   if (max_ct_fuzzing) setup_max_counts();
+  if (max_ct_fuzzing)
+    top_rated= ck_alloc(PERF_SIZE * sizeof(struct queue_entry *));
+  else
+    top_rated = ck_alloc(MAP_SIZE * sizeof(struct queue_entry *))
   init_count_class16();
+
 
   setup_dirs_fds();
   read_testcases();
@@ -8385,6 +8379,7 @@ stop_fuzzing:
   fclose(plot_file);
   destroy_queue();
   destroy_extras();
+  ck_free(top_rated);
   ck_free(target_path);
   ck_free(sync_id);
 
