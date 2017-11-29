@@ -1373,14 +1373,12 @@ static void update_bitmap_score(struct queue_entry* q) {
 static void cull_queue(void) {
 
   struct queue_entry* q;
-  static u8 temp_v[MAP_SIZE >> 3];
+  
   u32 i;
 
   if (dumb_mode || !score_changed) return;
 
   score_changed = 0;
-
-  memset(temp_v, 255, MAP_SIZE >> 3);
 
   queued_favored  = 0;
   pending_favored = 0;
@@ -1392,20 +1390,11 @@ static void cull_queue(void) {
     q = q->next;
   }
 
-  u32 start = 0; 
-  u32 end = MAP_SIZE;
+  if (max_ct_fuzzing) {
 
-  if (half_trace) {
-    start = MAP_SIZE >> 2;
-    end = MAP_SIZE >> 1;
-  }
+    for (i = 0; i < PERF_SIZE; i++) {
 
-  // TODO
-  for (i = start; i < end; i++) {
-
-    if (top_rated[i]) {
-
-      if (max_ct_fuzzing) {
+      if (top_rated[i]) {
 
         /* if top rated for any i, will be favored */
         u8 was_favored_already = top_rated[i]->favored;
@@ -1418,28 +1407,43 @@ static void cull_queue(void) {
           if (!top_rated[i]->was_fuzzed) pending_favored++;
         }
 
-      } else if ((temp_v[i >> 3] & (1 << (i & 7)))) {
-        /* Let's see if anything in the bitmap isn't captured in temp_v.
-        If yes, and if it has a top_rated[] contender, let's use it. */
+      }
 
-        u32 j = MAP_SIZE >> 3;
+    }
 
-        /* Remove all bits belonging to the current entry from temp_v. */
+  } else {
 
-        while (j--) 
-          if (top_rated[i]->trace_mini[j])
-            temp_v[j] &= ~top_rated[i]->trace_mini[j];
+    /* uncovered by favored elements bytes */
+    static u8 temp_v[MAP_SIZE >> 3];
+    memset(temp_v, 255, MAP_SIZE >> 3);
 
-        top_rated[i]->favored = 1;
-        
-        queued_favored++;
+    for (i = 0; i < MAP_SIZE; i++) {
 
-        if (!top_rated[i]->was_fuzzed) pending_favored++;
+      if (top_rated[i]) {
+
+        if ((temp_v[i >> 3] & (1 << (i & 7)))) {
+          /* Let's see if anything in the bitmap isn't captured in temp_v.
+          If yes, and if it has a top_rated[] contender, let's use it. */
+
+          u32 j = MAP_SIZE >> 3;
+
+          /* Remove all bits belonging to the current entry from temp_v. */
+
+          while (j--) 
+            if (top_rated[i]->trace_mini[j])
+              temp_v[j] &= ~top_rated[i]->trace_mini[j];
+
+          top_rated[i]->favored = 1;
+          
+          queued_favored++;
+
+          if (!top_rated[i]->was_fuzzed) pending_favored++;
+
+        }
 
       }
 
     }
-  
 
   }
 
