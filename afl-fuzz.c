@@ -1303,13 +1303,13 @@ static void update_bitmap_score(struct queue_entry* q) {
       if (perf_bits[i]) {
          
          if (top_rated[i]) {
-           perf_bits[i] < max_counts[i] continue;
+           if (perf_bits[i] < max_counts[i]) continue;
          }
 
          /* Insert ourselves as the new winner. */
          top_rated[i] = q;
 
-        /* if we get here, we know that raw_trace_bits[i] >= max_counts[i] */
+        /* if we get here, we know that perf_bits[i] >= max_counts[i] */
 
          DEBUG("Setting max value for perf key %d to %d\n", i, perf_bits[i]);
          max_counts[i] = perf_bits[i];
@@ -3291,7 +3291,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
     queue_top->exec_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
     if (max_ct_fuzzing) 
-      q->perf_cksum = hash32(perf_bits, PERF_SIZE*sizeof(u32), HASH_CONST); 
+      queue_top->perf_cksum = hash32(perf_bits, PERF_SIZE*sizeof(u32), HASH_CONST); 
 
     /* Try to calibrate inline; this also calls update_bitmap_score() when
        successful. */
@@ -8247,7 +8247,7 @@ int main(int argc, char** argv) {
   if (max_ct_fuzzing)
     top_rated= ck_alloc(PERF_SIZE * sizeof(struct queue_entry *));
   else
-    top_rated = ck_alloc(MAP_SIZE * sizeof(struct queue_entry *))
+    top_rated = ck_alloc(MAP_SIZE * sizeof(struct queue_entry *));
   init_count_class16();
 
 
