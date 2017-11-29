@@ -129,7 +129,7 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            max_ct_fuzzing,            /* Fuzz for maximum counts          */
            half_trace,                /* ... only max on half the trace   */
            prioritize_less_stale,     /* prioritize by staleness          */
-           maximize_overall;          /* maximize the sum of the trace    */
+           maximize_overall,          /* maximize the sum of the trace    */
            deferred_mode,             /* Deferred forkserver mode?        */
            fast_cal;                  /* Try to calibrate faster?         */
 
@@ -254,7 +254,7 @@ struct queue_entry {
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
       exec_cksum,                     /* Checksum of the execution trace  */
-      counts_cksum;                   /* PERF - cksum of unbukceted trace */
+      perf_cksum;                   /* PERF - cksum of unbukceted trace */
 
   u64 exec_us,                        /* Execution time (us)              */
       handicap,                       /* Number of queue cycles behind    */
@@ -984,6 +984,7 @@ static inline u8 has_new_bits(u8* virgin_map) {
    variable behavior and sometimes causes crashes
    */
 static inline u8 has_new_max() {
+  // TODO
   u32 total = 0; 
   if (!half_trace ){
     for (int i = 0; i < MAP_SIZE; i++){
@@ -1322,6 +1323,7 @@ static void update_bitmap_score(struct queue_entry* q) {
   u32 start = 0; 
   u32 end = MAP_SIZE;
 
+  //TODO
   if (half_trace) {
     start = MAP_SIZE >> 2;
     end = MAP_SIZE >> 1; 
@@ -1454,7 +1456,7 @@ static void cull_queue(void) {
     end = MAP_SIZE >> 1;
   }
 
-
+  // TODO
   for (i = start; i < end; i++) {
 
     if (top_rated[i]) {
@@ -1518,6 +1520,7 @@ EXP_ST void setup_shm(void) {
   memset(virgin_tmout, 255, MAP_SIZE);
   memset(virgin_crash, 255, MAP_SIZE);
 
+  //TODO
   shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
 
   if (shm_id < 0) PFATAL("shmget() failed");
@@ -1543,6 +1546,7 @@ EXP_ST void setup_shm(void) {
 
 /* set the max counts map to 0 */
 EXP_ST void setup_max_counts() {
+  //TODO
   memset(max_counts, 0, MAP_SIZE);
 }
 
@@ -2447,6 +2451,7 @@ static u8 run_target(char** argv, u32 timeout) {
      must prevent any earlier operations from venturing into that
      territory. */
 
+  // TODO also memset  PERF_MAP
   memset(trace_bits, 0, MAP_SIZE);
   MEM_BARRIER();
 
@@ -2599,7 +2604,7 @@ static u8 run_target(char** argv, u32 timeout) {
   MEM_BARRIER();
 
   tb4 = *(u32*)trace_bits;
- 
+  // TODO
   if (max_ct_fuzzing) memcpy(raw_trace_bits, trace_bits, MAP_SIZE);
 #ifdef __x86_64__
   classify_counts((u64*)trace_bits);
@@ -2607,6 +2612,7 @@ static u8 run_target(char** argv, u32 timeout) {
   classify_counts((u32*)trace_bits);
 #endif /* ^__x86_64__ */
 
+  // TODO
   if (half_trace) memset(trace_bits + (MAP_SIZE >> 1), 0, MAP_SIZE >> 1);
 
   prev_timed_out = child_timed_out;
@@ -2708,6 +2714,7 @@ static void show_stats(void);
 
 static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
                          u32 handicap, u8 from_queue) {
+  // TODO in calibration look at the entire trace bits... booo
 
   static u8 first_trace[MAP_SIZE];
 
@@ -2790,7 +2797,8 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
       } else {
 
         q->exec_cksum = cksum;
-        if (max_ct_fuzzing) q->counts_cksum = hash32(raw_trace_bits, MAP_SIZE, HASH_CONST); 
+        // TODO
+        if (max_ct_fuzzing) q->perf_cksum = hash32(raw_trace_bits, MAP_SIZE, HASH_CONST); 
         memcpy(first_trace, trace_bits, MAP_SIZE);
 
       }
@@ -3334,7 +3342,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     }
 
     queue_top->exec_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
-    if (max_ct_fuzzing) queue_top->counts_cksum = hash32(raw_trace_bits, MAP_SIZE, HASH_CONST);
+    if (max_ct_fuzzing) queue_top->perf_cksum = hash32(raw_trace_bits, MAP_SIZE, HASH_CONST);
 
     /* Try to calibrate inline; this also calls update_bitmap_score() when
        successful. */
@@ -4650,6 +4658,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
   static u8 tmp[64];
   static u8 clean_trace[MAP_SIZE];
   static u8 raw_clean_trace[MAP_SIZE];
+  // TODO here as well 
 
   u8  needs_write = 0, fault = 0;
   u32 trim_exec = 0;
@@ -4708,7 +4717,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
          negatives every now and then. */
 
       if ((!max_ct_fuzzing && (cksum == q->exec_cksum)) ||
-          (max_ct_fuzzing && (cksum == q->counts_cksum))) {
+          (max_ct_fuzzing && (cksum == q->perf_cksum))) {
 
         u32 move_tail = q->len - remove_pos - trim_avail;
 
@@ -5600,13 +5609,13 @@ static u8 fuzz_one(char** argv) {
       }
       else{
         if (max_ct_fuzzing) 
-          cksum = ~queue_cur->counts_cksum;
+          cksum = ~queue_cur->perf_cksum;
         else
           cksum = ~queue_cur->exec_cksum;
       }
 
       if ( (!max_ct_fuzzing && (cksum != queue_cur->exec_cksum)) ||
-           (max_ct_fuzzing && (cksum != queue_cur->counts_cksum))) {
+           (max_ct_fuzzing && (cksum != queue_cur->perf_cksum))) {
         eff_map[EFF_APOS(stage_cur)] = 1;
         eff_cnt++;
       }
