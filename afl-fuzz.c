@@ -46,6 +46,7 @@
 #include <dlfcn.h>
 #include <sched.h>
 #include <stdarg.h>
+#include <limits.h>
 
 #include <sys/wait.h>
 #include <sys/time.h>
@@ -6860,10 +6861,7 @@ abandon_entry:
   /* update staleness accordingly */
   if (max_ct_fuzzing && prioritize_less_stale) {
 
-    s32 start = 0;
-    s32 end = MAP_SIZE; 
-
-    for (s32 k=start; k < end; k++)
+    for (s32 k=0; k < PERF_SIZE; k++)
       if (max_counts[k] > orig_max_counts[k]){
         DEBUG("key %d is not stale\n", k);
         staleness[k] = 0;
