@@ -5166,7 +5166,7 @@ static u8 fuzz_one(char** argv) {
   u32 a_len = 0;
 
   u32 orig_max_counts[PERF_SIZE];
-  memcpy(orig_max_counts, max_counts, PERF_SIZE);
+  memcpy(orig_max_counts, max_counts, PERF_SIZE*sizeof(u32));
 
 #ifdef IGNORE_FINDS
 
