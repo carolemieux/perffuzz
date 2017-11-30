@@ -42,21 +42,21 @@ int main(int argc, char * argv[])
 {
     FILE * in = fopen(argv[1], "r");
     int i = 0;
-    int sortarray[20];
+    int sortarray[64];
     char c; 
 
-    while (i < 20 && ((c = fgetc(in)) != EOF)) {
+    while (i < 64 && ((c = fgetc(in)) != EOF)) {
        sortarray[i]= (int) c;
        i++;
     } 
 
     fclose(in);
  
-    insertionSort(sortarray, 20);
-    printArray(sortarray, 20);
+    insertionSort(sortarray, 64);
+    printArray(sortarray, 64);
     printf("comps: %d\n", comps);
 
-    if (comps == 190) {
+    if (comps == 32*63) {
        return 1;
     }
     return 0;
