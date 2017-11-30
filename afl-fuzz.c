@@ -984,7 +984,6 @@ static inline u8 has_new_max() {
   for (int i = 0; i < PERF_SIZE; i++){
       if (unlikely(perf_bits[i])){
         if (unlikely(perf_bits[i] > max_counts[i])) {
-           DEBUG("Achieves count of %d (> %d) at branch %d\n", perf_bits[i], max_counts[i], i);
            return 1;
         }
       }
@@ -1287,7 +1286,6 @@ static void minimize_bits(u8* dst, u8* src) {
 
 static void update_bitmap_score(struct queue_entry* q) {
 
-  DEBUG("updating bitmap score for %s\n", q->fname);
   u32 i;
 
   /* For every byte set in trace(or perf)_bits[], see if there is a previous winner,
@@ -1309,7 +1307,6 @@ static void update_bitmap_score(struct queue_entry* q) {
 
         /* if we get here, we know that perf_bits[i] >= max_counts[i] */
 
-         DEBUG("Setting max value for perf key %d to %d\n", i, perf_bits[i]);
          max_counts[i] = perf_bits[i];
 
          score_changed = 1;
@@ -5212,6 +5209,9 @@ static u8 fuzz_one(char** argv) {
 
 #endif /* ^IGNORE_FINDS */
 
+  DEBUG("===============Fuzzing test case #%u===============\n",current_entry);
+
+  if (!queue_cur->favored) DEBUG("(Test case is not favored)\n");
   if (not_on_tty) {
     ACTF("Fuzzing test case #%u (%u total, %llu uniq crashes found)...",
          current_entry, queued_paths, unique_crashes);
