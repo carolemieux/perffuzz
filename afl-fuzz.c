@@ -3026,6 +3026,16 @@ static void perform_dry_run(char** argv) {
 
   OKF("All test cases processed.");
 
+  DEBUG("======== Starting Keys ========\n");
+  if (max_ct_fuzzing) {
+    for (u32 k=0; k < PERF_SIZE; k++){
+      // if there is a non-zero score at this index.. 
+      if (max_counts[k]){
+          DEBUG("At key %d, val is %d\n", k, max_counts[k]);
+      }
+    }
+  }
+
 }
 
 
@@ -6543,56 +6553,52 @@ havoc_stage:
 
           }
 
-        case 13:
+        case 13: {
+          
+          u8  actually_clone = UR(4);
+          u32 clone_from, clone_to, clone_len;
 
-          if (temp_len + HAVOC_BLK_XL < MAX_FILE) {
+          if (actually_clone) {
 
-            /* Clone bytes (75%) or insert a block of constant bytes (25%). */
+            clone_len  = choose_block_len(temp_len);
+            clone_from = UR(temp_len - clone_len + 1);
 
-            u8  actually_clone = UR(4);
-            u32 clone_from, clone_to, clone_len;
-            u8* new_buf;
+          } else {
 
-            if (actually_clone) {
-
-              clone_len  = choose_block_len(temp_len);
-              clone_from = UR(temp_len - clone_len + 1);
-
-            } else {
-
-              clone_len = choose_block_len(HAVOC_BLK_XL);
-              clone_from = 0;
-
-            }
-
-            clone_to   = UR(temp_len);
-
-            new_buf = ck_alloc_nozero(temp_len + clone_len);
-
-            /* Head */
-
-            memcpy(new_buf, out_buf, clone_to);
-
-            /* Inserted part */
-
-            if (actually_clone)
-              memcpy(new_buf + clone_to, out_buf + clone_from, clone_len);
-            else
-              memset(new_buf + clone_to,
-                     UR(2) ? UR(256) : out_buf[UR(temp_len)], clone_len);
-
-            /* Tail */
-            memcpy(new_buf + clone_to + clone_len, out_buf + clone_to,
-                   temp_len - clone_to);
-
-            ck_free(out_buf);
-            out_buf = new_buf;
-            temp_len += clone_len;
+            clone_len = choose_block_len(HAVOC_BLK_XL);
+            clone_from = 0;
 
           }
 
-          break;
+          if (temp_len + clone_len >= MAX_FILE) break;
 
+          clone_to   = UR(temp_len);
+
+          u8* new_buf;
+          new_buf = ck_alloc_nozero(temp_len + clone_len);
+
+          /* Head */
+
+          memcpy(new_buf, out_buf, clone_to);
+
+          /* Inserted part */
+
+          if (actually_clone)
+            memcpy(new_buf + clone_to, out_buf + clone_from, clone_len);
+          else
+            memset(new_buf + clone_to,
+                   UR(2) ? UR(256) : out_buf[UR(temp_len)], clone_len);
+
+          /* Tail */
+          memcpy(new_buf + clone_to + clone_len, out_buf + clone_to,
+                 temp_len - clone_to);
+
+          ck_free(out_buf);
+          out_buf = new_buf;
+          temp_len += clone_len;
+
+          break;
+        }
         case 14: {
 
             /* Overwrite bytes with a randomly selected chunk (75%) or fixed
