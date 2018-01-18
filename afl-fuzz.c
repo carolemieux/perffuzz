@@ -1465,10 +1465,9 @@ EXP_ST void setup_shm(void) {
 
   /* in the case of the max count fuzzing, allocate the performance
     map right after the regular bitmap.  */
-  if (max_ct_fuzzing)
-   shm_id = shmget(IPC_PRIVATE, MAP_SIZE + (PERF_SIZE * sizeof(u32)), IPC_CREAT | IPC_EXCL | 0600);
-  else
-    shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+  /* always allocate so that programs instrumented with afl-clang-fast
+     don't cause segfaults */
+  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + (PERF_SIZE * sizeof(u32)), IPC_CREAT | IPC_EXCL | 0600);
 
   if (shm_id < 0) PFATAL("shmget() failed");
 
@@ -3026,8 +3025,8 @@ static void perform_dry_run(char** argv) {
 
   OKF("All test cases processed.");
 
-  DEBUG("======== Starting Keys ========\n");
   if (max_ct_fuzzing) {
+  DEBUG("======== Starting Keys ========\n");
     for (u32 k=0; k < PERF_SIZE; k++){
       // if there is a non-zero score at this index.. 
       if (max_counts[k]){
