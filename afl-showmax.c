@@ -65,7 +65,9 @@ static u8  quiet_mode = 1,                /* Hide non-essential messages?      *
            edges_only,                /* Ignore hit counts?                */
            cmin_mode,                 /* Generate output in afl-cmin mode? */
            binary_mode,               /* Write output as a binary map      */
-           keep_cores;                /* Allow coredumps?                  */
+           keep_cores,                /* Allow coredumps?                  */
+           show_all,
+           show_non_total_max;
 
 static volatile u8
            stop_soon,                 /* Ctrl-C pressed?                   */
@@ -420,7 +422,9 @@ static void usage(u8* argv0) {
 
        "  -q            - sink program's output and don't show messages\n"
        "  -e            - show edge coverage only, ignore hit counts\n"
-       "  -c            - allow core dumps\n\n"
+       "  -c            - allow core dumps\n"
+       "  -a            - show all per branches \n"
+       "  -x            - show the maximum over the branches (except the first)\n\n"
 
        "This tool displays raw tuple data captured by AFL instrumentation.\n"
        "For additional help, consult %s/README.\n\n" cRST,
@@ -563,9 +567,17 @@ int main(int argc, char** argv) {
 
   doc_path = access(DOC_PATH, F_OK) ? "docs" : DOC_PATH;
 
-  while ((opt = getopt(argc,argv,"+o:m:t:A:eqZQbc")) > 0)
+  while ((opt = getopt(argc,argv,"+axo:m:t:A:eqZQbc")) > 0)
 
     switch (opt) {
+
+      case 'x':
+         show_non_total_max = 1;
+         break;
+      
+      case 'a':
+         show_all = 1;
+         break;
 
       case 'o':
 
@@ -704,14 +716,31 @@ int main(int argc, char** argv) {
   run_target(use_argv);
 
   u32 * perf_bits = (u32 *) (trace_bits + MAP_SIZE);
-  printf("%u\n", perf_bits[0]);
-  u64 sum = 0;
-  for (int i = 1; i < PERF_SIZE; i++){
+
+  if (show_all ){
+    for (int i = 1; i < PERF_SIZE; i++){
+      if (perf_bits[i]) printf("%d %u\n",i, perf_bits[i]);
+    }
+  } 
+  else if (show_non_total_max) {
+    u32 max = 0;
+    for (int i = 1; i < PERF_SIZE; i++){
+      if (perf_bits[i] > max)
+        max = perf_bits[i];
+    }
+    printf("%u\n", max);
+  } 
+  else {
+    printf("%u\n", perf_bits[0]);
+    u64 sum = 0;
+    for (int i = 1; i < PERF_SIZE; i++){
     //if (perf_bits[i]) printf("%u\n",perf_bits[i]);
-    sum += perf_bits[i];}
-  if (sum != perf_bits[0]) {
-   OKF("Not equal: %u != %llu" cRST, perf_bits[0], sum);
-   }
+      sum += perf_bits[i];}
+      if (sum != perf_bits[0]) {
+      OKF("Not equal: %u != %llu" cRST, perf_bits[0], sum);
+    }
+  }
+
 
   if (!quiet_mode) {
 
