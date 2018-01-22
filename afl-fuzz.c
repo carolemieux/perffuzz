@@ -131,6 +131,7 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            max_ct_fuzzing,            /* Fuzz for maximum counts          */
            prioritize_less_stale,     /* prioritize by staleness          */
            complex_stale,             /* use a fancy staleness formula    */
+           zero_other_counts,         /* zero out all perf counts but 1st */
            deferred_mode,             /* Deferred forkserver mode?        */
            fast_cal;                  /* Try to calibrate faster?         */
 
@@ -2559,6 +2560,9 @@ static u8 run_target(char** argv, u32 timeout) {
 #else
   classify_counts((u32*)trace_bits);
 #endif /* ^__x86_64__ */
+  if (max_ct_fuzzing && zero_other_counts) {
+    memset(trace_bits + MAP_SIZE + sizeof(u32), 0, sizeof(u32)*(PERF_SIZE -1));
+  }
 
   prev_timed_out = child_timed_out;
 
@@ -7998,7 +8002,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+spchi:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
+  while ((opt = getopt(argc, argv, "+zspchi:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
 
     switch (opt) {
 
@@ -8016,6 +8020,11 @@ int main(int argc, char** argv) {
         SAYF("Complex staleness...\n");
         complex_stale = 1;
         break; 
+
+      case 'z':
+        SAYF("Zeroing all feedback except sum. EXPERIMENTAL\n");
+        zero_other_counts = 1;
+        break;
 
       case 'i': /* input dir */
 
