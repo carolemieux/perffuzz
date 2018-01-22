@@ -47,6 +47,7 @@
 #include <sched.h>
 #include <stdarg.h>
 #include <limits.h>
+#include <math.h>
 
 #include <sys/wait.h>
 #include <sys/time.h>
@@ -129,6 +130,8 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            persistent_mode,           /* Running in persistent mode?      */
            max_ct_fuzzing,            /* Fuzz for maximum counts          */
            prioritize_less_stale,     /* prioritize by staleness          */
+           complex_stale,             /* use a fancy staleness formula    */
+           zero_other_counts,         /* zero out all perf counts but 1st */
            deferred_mode,             /* Deferred forkserver mode?        */
            fast_cal;                  /* Try to calibrate faster?         */
 
@@ -2557,6 +2560,9 @@ static u8 run_target(char** argv, u32 timeout) {
 #else
   classify_counts((u32*)trace_bits);
 #endif /* ^__x86_64__ */
+  if (max_ct_fuzzing && zero_other_counts) {
+    memset(trace_bits + MAP_SIZE + sizeof(u32), 0, sizeof(u32)*(PERF_SIZE -1));
+  }
 
   prev_timed_out = child_timed_out;
 
@@ -5135,7 +5141,11 @@ static u8 too_stale(){
       }
     }
 
-    u32 staleness_score = 100 - STALENESS_CONST*(my_min_staleness-min_staleness)/max_staleness;
+    u32 staleness_score;
+    if (!complex_stale)
+      staleness_score = 100 - STALENESS_CONST*(my_min_staleness-min_staleness)/max_staleness;
+    else
+      staleness_score = 100 - STALENESS_CONST*(exp(-((double) my_min_staleness-min_staleness)/ sqrt(max_staleness)) +1);
 
     DEBUG("my_min_stale: %d, min_stale: %d, max_stale: %d, score: %d\n", my_min_staleness, min_staleness, max_staleness, staleness_score);
 
@@ -7992,18 +8002,28 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+sphi:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
+  while ((opt = getopt(argc, argv, "+zspchi:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
 
     switch (opt) {
 
+      case 'p':
+        SAYF("Max count fuzzing...\n");
+        max_ct_fuzzing = 1;
+        break;
+      
       case 's':
         SAYF("Prioritizing less stale inputs...\n");
         prioritize_less_stale = 1;
         break;
 
-      case 'p':
-        SAYF("Max count fuzzing...\n");
-        max_ct_fuzzing = 1;
+      case 'c':
+        SAYF("Complex staleness...\n");
+        complex_stale = 1;
+        break; 
+
+      case 'z':
+        SAYF("Zeroing all feedback except sum. EXPERIMENTAL\n");
+        zero_other_counts = 1;
         break;
 
       case 'i': /* input dir */
