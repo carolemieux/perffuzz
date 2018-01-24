@@ -31,12 +31,16 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include <iostream>
+#include <fstream>
+
 #include "llvm/ADT/Statistic.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
+#include "llvm/IR/DebugInfo.h"
 
 using namespace llvm;
 
@@ -62,6 +66,57 @@ namespace {
 
 char AFLCoverage::ID = 0;
 
+static inline void dump_loc(std::ostream& out, const char* name, const DebugLoc& dd) {
+  if (std::getenv("DUMP_INFO") == NULL) { return; }
+  if(!dd) { return; }
+  auto* scope = cast<DIScope>(dd.getScope());
+  out << ", \"" << name << "\": { \"file\": \"" << scope->getFilename().str()
+      << "\", \"line\": " << dd.getLine()
+      << ", \"column\": " << dd.getCol() << " }";
+}
+
+
+static inline void dump_branch(std::ostream& out, const BasicBlock& bb, const unsigned int cur_loc) {
+  if (std::getenv("DUMP_INFO") == NULL) { return; }
+  out << "{ \"type\": \"bb\", ";
+  out << "\"id\": " << cur_loc;
+  dump_loc(out, "begin", bb.getInstList().begin()->getDebugLoc());
+  dump_loc(out, "end", bb.getTerminator()->getDebugLoc());
+  out << "}" << std::endl;
+}
+
+static inline std::string loc_description (const DebugLoc& dd) {
+  if(!dd) { return ""; }
+  auto* scope = cast<DIScope>(dd.getScope());
+  return scope->getFilename().str() + ":" + std::to_string(dd.getLine()) + ":" + std::to_string(dd.getCol()); 
+}
+
+static inline std::string bb_description(const BasicBlock& bb) {
+  return "(" + loc_description(bb.getInstList().begin()->getDebugLoc()) + "-" + loc_description(bb.getTerminator()->getDebugLoc()) + ")";
+
+}
+
+static inline std::string edge_descp(std::map<unsigned int, std::vector<std::string>> descp_map , const unsigned int pred_id, const unsigned int suc_id){
+  std::string ret_string = "";
+  unsigned int edge_id = (pred_id >> 1) ^ suc_id;
+  std::vector<std::string> pred_descps = descp_map[pred_id];
+  std::vector<std::string> suc_descps = descp_map[suc_id];
+  for (auto &pred_descp : pred_descps) {
+    for (auto &suc_descp : suc_descps) {
+      ret_string += std::to_string(edge_id) + pred_descp + "->" + suc_descp + "\n";
+    }
+  }
+  return ret_string;
+}
+
+static inline void dump_edge_descp(std::ostream& out, std::map<unsigned int, std::vector<std::string>> descp_map, const unsigned int pred_id, const unsigned int suc_id) {
+   out << edge_descp(descp_map, pred_id, suc_id);
+}
+
+static inline void dump_edge(std::ostream& out, const unsigned int pred_id, const unsigned int suc_id) { 
+  if (std::getenv("DUMP_INFO") == NULL) { return; }
+  out << "{ \"type\": \"edge\", \"pred_id\": " << pred_id << ", \"suc_id\": " << suc_id << " }" << std::endl;
+}
 
 bool AFLCoverage::runOnModule(Module &M) {
 
@@ -93,6 +148,8 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   }
 
+  std::ofstream branch_info("branch.info", std::ofstream::app);
+
   /* Get globals for the SHM region and the previous location. Note that
      __afl_prev_loc is thread-local. */
 
@@ -113,6 +170,8 @@ bool AFLCoverage::runOnModule(Module &M) {
   /* Instrument all the things! */
 
   int inst_blocks = 0;
+  DenseMap<const BasicBlock*, unsigned int> afl_bb_ids;
+  std::map<unsigned int, std::vector<std::string>> ids_to_descp;
 
   for (auto &F : M)
     for (auto &BB : F) {
@@ -125,7 +184,16 @@ bool AFLCoverage::runOnModule(Module &M) {
       /* Make up cur_loc */
 
       unsigned int cur_loc = AFL_R(MAP_SIZE);
-
+      const BasicBlock* bb_ptr = &BB;
+     
+      afl_bb_ids.insert(std::make_pair(bb_ptr, cur_loc));
+      //dump_branch(branch_info, BB, cur_loc);
+      
+      if (ids_to_descp.find(cur_loc) == ids_to_descp.end()) {
+        ids_to_descp[cur_loc] = std::vector<std::string>();
+      }
+      ids_to_descp[cur_loc].push_back(bb_description(BB));
+     
       ConstantInt *CurLoc = ConstantInt::get(Int32Ty, cur_loc);
 
       /* Load prev_loc */
@@ -180,6 +248,22 @@ bool AFLCoverage::runOnModule(Module &M) {
       inst_blocks++;
 
     }
+
+  // dump cfg edges
+  for (auto &F : M) {
+    for (auto &BB : F) {
+        BasicBlock& bb = BB;
+        const BasicBlock* bb_ptr = &BB;
+        auto pred_id = afl_bb_ids.lookup(bb_ptr);
+        TerminatorInst* term = bb.getTerminator();
+        for(BasicBlock* suc : term->successors()) {
+          auto suc_id = afl_bb_ids.lookup(suc);
+          //dump_edge(branch_info, pred_id, suc_id);
+          dump_edge_descp(branch_info, ids_to_descp, pred_id, suc_id);
+        }
+    }
+  }
+  branch_info.close();
 
   /* Say something nice. */
 
