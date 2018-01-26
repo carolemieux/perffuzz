@@ -12,16 +12,21 @@ fi
 prog=$1
 shift
 
+# Gonna use a named FIFO pipe for logging to avoid disk usage
 trace="branch_trace.log"
-
 rm -f $trace
+mkfifo $trace
+
+# Opens the pipe for reading and waits in the background
+$SCRIPT_DIR/maximizing_inputs.py $trace &
+
+# Run all inputs and log branches in the pipe
 for input in $@; do
     AFL_LOG_LOC=$trace $prog < $input 1> /dev/null 2> /dev/null
     echo "# End $input" >> $trace
-done
+done  > $trace # This loops writes nothing but keeps the pipe open long enough
 
-$SCRIPT_DIR/maximizing_inputs.py $trace
-
+# Cleanup
 rm -f $trace
 
 
