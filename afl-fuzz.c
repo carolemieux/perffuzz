@@ -194,6 +194,7 @@ EXP_ST u64 total_crashes,             /* Total number of crashes          */
            queue_cycle,               /* Queue round counter              */
            cycles_wo_finds,           /* Cycles without any new paths     */
            trim_execs,                /* Execs done to trim input files   */
+           max_file_len = MAX_FILE,   /* Maximum length of input file     */
            bytes_trim_in,             /* Bytes coming into the trimmer    */
            bytes_trim_out,            /* Bytes coming outa the trimmer    */
            blocks_eff_total,          /* Blocks subject to effector maps  */
@@ -1596,9 +1597,9 @@ static void read_testcases(void) {
 
     }
 
-    if (st.st_size > MAX_FILE) 
+    if (st.st_size > max_file_len) 
       FATAL("Test case '%s' is too big (%s, limit is %s)", fn,
-            DMS(st.st_size), DMS(MAX_FILE));
+            DMS(st.st_size), DMS(max_file_len));
 
     /* Check for metadata that indicates that deterministic fuzzing
        is complete for this entry. We don't want to repeat deterministic
@@ -4812,28 +4813,31 @@ static u32 choose_block_len(u32 limit) {
   switch (UR(rlim)) {
 
     case 0:  min_value = 1;
-             max_value = HAVOC_BLK_SMALL;
+             max_value = max_file_len / 16;
              break;
 
-    case 1:  min_value = HAVOC_BLK_SMALL;
-             max_value = HAVOC_BLK_MEDIUM;
+    case 1:  min_value = max_file_len / 16;
+             max_value = max_file_len / 8;
              break;
 
     default: 
 
              if (UR(10)) {
 
-               min_value = HAVOC_BLK_MEDIUM;
-               max_value = HAVOC_BLK_LARGE;
+               min_value = max_file_len / 8;
+               max_value = max_file_len / 4;
 
              } else {
 
-               min_value = HAVOC_BLK_LARGE;
-               max_value = HAVOC_BLK_XL;
+               min_value = max_file_len / 4;
+               max_value = max_file_len * 3 / 4;
 
              }
 
   }
+
+  if (min_value < 1) min_value = 1;
+  if (max_value < 1) max_value = 1;
 
   if (min_value >= limit) min_value = 1;
 
@@ -6221,7 +6225,7 @@ skip_interest:
 
     for (j = 0; j < extras_cnt; j++) {
 
-      if (len + extras[j].len > MAX_FILE) {
+      if (len + extras[j].len > max_file_len) {
         stage_max--; 
         continue;
       }
@@ -6579,7 +6583,7 @@ havoc_stage:
 
           }
 
-          if (temp_len + clone_len >= MAX_FILE) break;
+          if (temp_len + clone_len >= max_file_len) break;
 
           clone_to   = UR(temp_len);
 
@@ -6687,7 +6691,7 @@ havoc_stage:
               use_extra = UR(a_extras_cnt);
               extra_len = a_extras[use_extra].len;
 
-              if (temp_len + extra_len >= MAX_FILE) break;
+              if (temp_len + extra_len >= max_file_len) break;
 
               new_buf = ck_alloc_nozero(temp_len + extra_len);
 
@@ -6702,7 +6706,7 @@ havoc_stage:
               use_extra = UR(extras_cnt);
               extra_len = extras[use_extra].len;
 
-              if (temp_len + extra_len >= MAX_FILE) break;
+              if (temp_len + extra_len >= max_file_len) break;
 
               new_buf = ck_alloc_nozero(temp_len + extra_len);
 
@@ -6990,7 +6994,7 @@ static void sync_fuzzers(char** argv) {
 
       /* Ignore zero-sized or oversized files. */
 
-      if (st.st_size && st.st_size <= MAX_FILE) {
+      if (st.st_size && st.st_size <= max_file_len) {
 
         u8  fault;
         u8* mem = mmap(0, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -8002,7 +8006,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+zspchi:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
+  while ((opt = getopt(argc, argv, "+zspN:chi:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
 
     switch (opt) {
 
@@ -8020,6 +8024,10 @@ int main(int argc, char** argv) {
         SAYF("Complex staleness...\n");
         complex_stale = 1;
         break; 
+
+     case 'N':
+        if (sscanf(optarg, "%llu", &max_file_len) != 1) FATAL("-N argument should be a positive integer");
+        break;
 
       case 'z':
         SAYF("Zeroing all feedback except sum. EXPERIMENTAL\n");
