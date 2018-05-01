@@ -42,7 +42,15 @@ make
  
  ### Interpret PerfFuzz results.
  
- In the ```queue``` directory of the ouput directory, inputs postfixed with ```+max``` were saved because the maximized a performance key. 
+In the ```queue``` directory of the ouput directory, inputs postfixed with ```+max``` were saved because the maximized a performance key. 
  
- [TODO: we have a bunch of scripts that help with analysis. we should probably share]
- 
+We provide some tools to help analyze the results. Notably, ```afl-showmax``` can print:
+1. The total path length (default)
+2. The maximum hotspot (```-x``` option)
+3. The entire performance map in a key:value format (```-a``` option)
+
+To build ```afl-showmax```, run
+```
+make afl-showmax
+```
+in the PerfFuzz directory. 
