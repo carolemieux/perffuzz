@@ -1,7 +1,11 @@
 
-# PerfFuzz
 
-[PerfFuzz does something or other]
+#  PerfFuzz
+
+<img align="left" src="perffuzz-logo.png" width=100> [PerfFuzz does something or other]
+
+[put some more stuff here so it looks nice]
+
 
 Built by Caroline Lemieux (clemieux@cs.berkeley.edu) and Rohan Padhye (rohan_padhye@cs.berkeley.edu) on top of Michal Zalewski's  (lcamtuf@google.com) AFL.
 
