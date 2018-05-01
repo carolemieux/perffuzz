@@ -1498,7 +1498,7 @@ EXP_ST void setup_shm(void) {
 
 /* set the max counts map to 0 */
 EXP_ST void setup_max_counts() {
-  memset(max_counts, 0, PERF_SIZE);
+  memset(max_counts, 0, PERF_SIZE * sizeof(u32));
 }
 
 
@@ -3275,7 +3275,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. PERF: also keep if there is a new max*/
 
-    u8 hnm;
+    u8 hnm = 0;
     if (max_ct_fuzzing) hnm = has_new_max(); // are there some subtleties here of when the max should be set? TODO
 
     if (!(hnb = has_new_bits(virgin_bits)) && (!max_ct_fuzzing || !hnm)) {
