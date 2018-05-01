@@ -7342,8 +7342,8 @@ static void usage(u8* argv0) {
        "  -n            - fuzz without instrumentation (dumb mode)\n"
        "  -x dir        - optional fuzzer dictionary (see README)\n"
        "  -p            - fuzz with max count settings\n"
-       "  -h            - maxmimize the second half of trace bits, treated as 16-bit\n"
-       "  -s            - prioritize inputs with lower stalness (requires p)\n\n"
+       "  -s            - prioritize inputs with lower staleness (requires p)\n"
+       "  -N size       - max input size to be generated, in bytes\n\n"
 
        "Other stuff:\n\n"
 
