@@ -40,7 +40,7 @@ make
 
 ### Run PerfFuzz on your program.
 
- In short, follow the instructions in README (regular AFL readme) section 6, but add the ```-p``` option to enable PerfFuzz, and the ```-TODO num``` option to restrict the size of produced inputs to a maximum file size of ```num```. Make sure your initial seed inputs (in the input directory) are of smaller size than ```num``` bytes!
+ In short, follow the instructions in README (regular AFL readme) section 6, but add the ```-p``` option to enable PerfFuzz, and the ```-N num``` option to restrict the size of produced inputs to a maximum file size of ```num```. Make sure your initial seed inputs (in the input directory) are of smaller size than ```num``` bytes!
  
  Let PerfFuzz run for as long as you like: we ran for a few hours on larger benchmarks.
  
