@@ -2,9 +2,10 @@
 
 #  PerfFuzz
 
-<img align="left" src="perffuzz-logo.png" width=100> [PerfFuzz does something or other]
+<img align="left" src="perffuzz-logo.png" width=100>
+Performance problems in software can arise unexpectedly when programs are provided with inputs that exhibit pathological behavior. But how can we find these inputs in the first place? PerfFuzz can generate such inputs automatically: given a program and at least one seed input, PerfFuzz automatically generates inputs that exercise pathological behavior across program locations, without any domain knowledge. 
 
-[put some more stuff here so it looks nice]
+PerfFuzz uses multi-dimensional performance feedback and independently maximizes execution counts for all program locations. This enables PerfFuzz to find a variety of inputs that exercise distinct hot spots in a program.
 
 
 Built by Caroline Lemieux (clemieux@cs.berkeley.edu) and Rohan Padhye (rohan_padhye@cs.berkeley.edu) on top of Michal Zalewski's  (lcamtuf@google.com) AFL.
