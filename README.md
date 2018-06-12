@@ -7,6 +7,8 @@ Performance problems in software can arise unexpectedly when programs are provid
 
 PerfFuzz uses multi-dimensional performance feedback and independently maximizes execution counts for all program locations. This enables PerfFuzz to find a variety of inputs that exercise distinct hot spots in a program.
 
+Read the [ISSTA paper](http://www.carolemieux.com/perffuzz-issta2018.pdf) for more details.
+
 
 Built by Caroline Lemieux (clemieux@cs.berkeley.edu) and Rohan Padhye (rohanpadhye@cs.berkeley.edu) on top of Michal Zalewski's  (lcamtuf@google.com) AFL.
 
