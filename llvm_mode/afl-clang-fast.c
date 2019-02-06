@@ -349,6 +349,8 @@ int main(int argc, char** argv) {
 
   edit_params(argc, argv);
 
+  setenv("LD_PRELOAD", alloc_printf("%s/afl-catch-dlclose.so", obj_path), 1);
+
   execvp(cc_params[0], (char**)cc_params);
 
   FATAL("Oops, failed to execute '%s' - check your PATH", cc_params[0]);
