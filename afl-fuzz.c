@@ -985,15 +985,17 @@ static inline u8 has_new_bits(u8* virgin_map) {
    */
 static inline u8 has_new_max() {
 
+  int ret = 0;
   for (int i = 0; i < PERF_SIZE; i++){
       if (unlikely(perf_bits[i])){
         if (unlikely(perf_bits[i] > max_counts[i])) {
-           return 1;
+           ret = 1;
+           DEBUG("New max(0x%04x) = %d\n", i, perf_bits[i]);
         }
       }
   }
   
-  return 0;
+  return ret;
 
 }
 
