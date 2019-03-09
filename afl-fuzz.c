@@ -975,13 +975,7 @@ static inline u8 has_new_bits(u8* virgin_map) {
 
 
 /* whether the trace_bits attain some new maximum value for 
-   some i. max_counts is not updated after this so that we
-   can short-circuit this check. This won't cause any spurious saving 
-   because after this we call add_to_queue and in calibrate_case
-   we call update bitmap, which updates all the maxes accordingly.
-   The only case in which has_new_max will return here but the 
-   max value will not be set accordingly is if the input has
-   variable behavior and sometimes causes crashes
+   some i. updates max_counts with max counts.
    */
 static inline u8 has_new_max() {
 
@@ -990,7 +984,8 @@ static inline u8 has_new_max() {
       if (unlikely(perf_bits[i])){
         if (unlikely(perf_bits[i] > max_counts[i])) {
            ret = 1;
-           DEBUG("New max(0x%04x) = %d\n", i, perf_bits[i]);
+           DEBUG("New max(0x%04x) = %u (earlier was: %u)\n ", i, perf_bits[i], max_counts[i]);
+	   max_counts[i] = perf_bits[i];
         }
       }
   }
@@ -1311,10 +1306,7 @@ static void update_bitmap_score(struct queue_entry* q) {
          /* Insert ourselves as the new winner. */
          top_rated[i] = q;
 
-        /* if we get here, we know that perf_bits[i] >= max_counts[i] */
-
-         max_counts[i] = perf_bits[i];
-
+        /* if we get here, we know that perf_bits[i] == max_counts[i] */
          score_changed = 1;
 
        }
