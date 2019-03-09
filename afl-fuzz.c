@@ -4736,7 +4736,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
     close(fd);
 
     memcpy(trace_bits, clean_trace, MAP_SIZE);
-    if (max_ct_fuzzing) memcpy(clean_perf, perf_bits, PERF_SIZE*sizeof(u32)); 
+    if (max_ct_fuzzing) memcpy(perf_bits, clean_perf, PERF_SIZE*sizeof(u32));
     update_bitmap_score(q);
 
   }
