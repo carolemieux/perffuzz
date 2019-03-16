@@ -2866,7 +2866,11 @@ static void perform_dry_run(char** argv) {
 
       case FAULT_NONE:
 
-        if (q == queue) check_map_coverage();
+
+    	if (q == queue) check_map_coverage();
+
+	// Populates the max_counts properly.
+	if (max_ct_fuzzing) has_new_max();
 
         if (crash_mode) FATAL("Test case '%s' does *NOT* crash", fn);
 
