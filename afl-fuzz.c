@@ -131,6 +131,7 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            max_ct_fuzzing,            /* Fuzz for maximum counts          */
            prioritize_less_stale,     /* prioritize by staleness          */
            complex_stale,             /* use a fancy staleness formula    */
+           save_everything,           /* save all inputs with something in perf_map */
            zero_other_counts,         /* zero out all perf counts but 1st */
            deferred_mode,             /* Deferred forkserver mode?        */
            fast_cal;                  /* Try to calibrate faster?         */
@@ -187,6 +188,7 @@ EXP_ST u64 total_crashes,             /* Total number of crashes          */
            unique_hangs,              /* Hangs with unique signatures     */
            total_execs,               /* Total execve() calls             */
            start_time,                /* Unix start time (ms)             */
+           num_perf_inputs,           /* Number of inputs with something in the perf map */
            last_path_time,            /* Time for most recent path (ms)   */
            last_crash_time,           /* Time for most recent crash (ms)  */
            last_hang_time,            /* Time for most recent hang (ms)   */
@@ -974,6 +976,16 @@ static inline u8 has_new_bits(u8* virgin_map) {
 }
 
 
+/* Whether PERF_BITS has a non-zero*/
+static inline u8 has_perf_bit() {
+  for (int i = 0; i < PERF_SIZE; i++){
+      if (unlikely(perf_bits[i])){
+        return 1;
+      }
+  }
+  return 0;
+}
+
 /* whether the trace_bits attain some new maximum value for 
    some i. updates max_counts with max counts.
    */
@@ -984,8 +996,8 @@ static inline u8 has_new_max() {
       if (unlikely(perf_bits[i])){
         if (unlikely(perf_bits[i] > max_counts[i])) {
            ret = 1;
-           DEBUG("New max(0x%04x) = %u (earlier was: %u)\n ", i, perf_bits[i], max_counts[i]);
-	   max_counts[i] = perf_bits[i];
+           DEBUG("new max(0x%04x) = %u (earlier was: %u)\n ", i, perf_bits[i], max_counts[i]);
+           max_counts[i] = perf_bits[i];
         }
       }
   }
@@ -1484,7 +1496,7 @@ EXP_ST void setup_shm(void) {
 
   trace_bits = shmat(shm_id, NULL, 0);
   // setup perf bits if needes
-  if (max_ct_fuzzing) perf_bits = (u32 *) (trace_bits + MAP_SIZE);
+  if (max_ct_fuzzing || save_everything) perf_bits = (u32 *) (trace_bits + MAP_SIZE);
   
   if (!trace_bits) PFATAL("shmat() failed");
 
@@ -2397,7 +2409,7 @@ static u8 run_target(char** argv, u32 timeout) {
      territory. */
 
   memset(trace_bits, 0, MAP_SIZE);
-  if (max_ct_fuzzing) memset(perf_bits, 0, PERF_SIZE * sizeof(u32));
+  if (max_ct_fuzzing || save_everything) memset(perf_bits, 0, PERF_SIZE * sizeof(u32));
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
@@ -3256,6 +3268,17 @@ static void write_crash_readme(void) {
 
 }
 
+static void save_as_perf_input(void * mem, u32 len) {
+  num_perf_inputs++;
+  u8 *fn = alloc_printf("%s/perf_inputs/id_%06llu", out_dir, num_perf_inputs);
+  s32 fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0) PFATAL("Unable to create '%s'", fn);
+  ck_write(fd, mem, len, fn);
+  close(fd);
+  ck_free(fn);
+
+}
+
 
 /* Check if the result of an execve() during routine fuzzing is interesting,
    save or queue the input test case for further analysis if so. Returns 1 if
@@ -3275,6 +3298,9 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
     u8 hnm = 0;
     if (max_ct_fuzzing) hnm = has_new_max(); // are there some subtleties here of when the max should be set? TODO
+    if (save_everything) {
+        if (hnm || has_perf_bit()) save_as_perf_input(mem, len);
+    }
 
     if (!(hnb = has_new_bits(virgin_bits)) && (!max_ct_fuzzing || !hnm)) {
       if (crash_mode) total_crashes++;
@@ -3901,6 +3927,11 @@ static void maybe_delete_out_dir(void) {
   if (delete_files(fn, CASE_PREFIX)) goto dir_cleanup_failed;
   ck_free(fn);
 
+  if (save_everything) {
+    fn = alloc_printf("%s/perf_inputs", out_dir);
+    if (delete_files(fn, "id_")) goto dir_cleanup_failed;
+    ck_free(fn);
+  }
   /* All right, let's do <out_dir>/crashes/id:* and <out_dir>/hangs/id:*. */
 
   if (!in_place_resume) {
@@ -7392,6 +7423,13 @@ EXP_ST void setup_dirs_fds(void) {
 
   }
 
+  /* Directory for everything we save */
+  if (save_everything) {
+    tmp = alloc_printf("%s/perf_inputs", out_dir);
+    if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+    ck_free(tmp);
+  }
+
   /* Queue directory for any starting & discovered paths. */
 
   tmp = alloc_printf("%s/queue", out_dir);
@@ -8004,9 +8042,14 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+zspN:chi:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
+  while ((opt = getopt(argc, argv, "+azspN:chi:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
 
     switch (opt) {
+
+      case 'a':
+        SAYF("Saving everything with extra feedback. May be slower.\n");
+        save_everything = 1;
+        break;
 
       case 'p':
         SAYF("Max count fuzzing...\n");
@@ -8258,7 +8301,7 @@ int main(int argc, char** argv) {
 
   setup_post();
   setup_shm();
-  if (max_ct_fuzzing) setup_max_counts();
+  if (max_ct_fuzzing || save_everything) setup_max_counts();
   if (max_ct_fuzzing)
     top_rated= ck_alloc(PERF_SIZE * sizeof(struct queue_entry *));
   else
