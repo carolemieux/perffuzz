@@ -3660,12 +3660,20 @@ static void maybe_update_plot_file(double bitmap_cvg, double eps) {
      favored_not_fuzzed, unique_crashes, unique_hangs, max_depth,
      execs_per_sec */
 
-  fprintf(plot_file, 
-          "%llu, %llu, %u, %u, %u, %u, %0.02f%%, %llu, %llu, %u, %0.02f\n",
-          get_cur_time() / 1000, queue_cycle - 1, current_entry, queued_paths,
-          pending_not_fuzzed, pending_favored, bitmap_cvg, unique_crashes,
-          unique_hangs, max_depth, eps); /* ignore errors */
-
+  if (save_everything) {
+    fprintf(plot_file, 
+            "%llu, %llu, %u, %u, %u, %u, %0.02f%%, %llu, %llu, %u, %0.02f, %llu\n",
+            get_cur_time() / 1000, queue_cycle - 1, current_entry, queued_paths,
+            pending_not_fuzzed, pending_favored, bitmap_cvg, unique_crashes,
+            unique_hangs, max_depth, eps, num_perf_inputs); /* ignore errors */
+  }
+  else {
+    fprintf(plot_file, 
+            "%llu, %llu, %u, %u, %u, %u, %0.02f%%, %llu, %llu, %u, %0.02f\n",
+            get_cur_time() / 1000, queue_cycle - 1, current_entry, queued_paths,
+            pending_not_fuzzed, pending_favored, bitmap_cvg, unique_crashes,
+            unique_hangs, max_depth, eps); /* ignore errors */
+  }
   fflush(plot_file);
 
 }
@@ -7511,10 +7519,18 @@ EXP_ST void setup_dirs_fds(void) {
   plot_file = fdopen(fd, "w");
   if (!plot_file) PFATAL("fdopen() failed");
 
-  fprintf(plot_file, "# unix_time, cycles_done, cur_path, paths_total, "
-                     "pending_total, pending_favs, map_size, unique_crashes, "
-                     "unique_hangs, max_depth, execs_per_sec\n");
-                     /* ignore errors */
+  if (save_everything) {
+    fprintf(plot_file, "# unix_time, cycles_done, cur_path, paths_total, "
+                       "pending_total, pending_favs, map_size, unique_crashes, "
+                       "unique_hangs, max_depth, execs_per_sec, num_perf_inputs\n");
+                       /* ignore errors */
+  } else {
+    fprintf(plot_file, "# unix_time, cycles_done, cur_path, paths_total, "
+                       "pending_total, pending_favs, map_size, unique_crashes, "
+                       "unique_hangs, max_depth, execs_per_sec\n");
+                       /* ignore errors */
+  
+  }
 
 }
 
