@@ -3270,12 +3270,14 @@ static void write_crash_readme(void) {
 
 static void save_as_perf_input(void * mem, u32 len) {
   num_perf_inputs++;
-  u8 *fn = alloc_printf("%s/perf_inputs/id_%06llu", out_dir, num_perf_inputs);
-  s32 fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
-  if (fd < 0) PFATAL("Unable to create '%s'", fn);
-  ck_write(fd, mem, len, fn);
-  close(fd);
-  ck_free(fn);
+  if (! max_ct_fuzzing && has_new_max()) {
+    u8 *fn = alloc_printf("%s/perf_inputs/id_%06llu", out_dir, num_perf_inputs);
+    s32 fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) PFATAL("Unable to create '%s'", fn);
+    ck_write(fd, mem, len, fn);
+    close(fd);
+    ck_free(fn);
+  }
 
 }
 
