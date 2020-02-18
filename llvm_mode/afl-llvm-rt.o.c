@@ -96,7 +96,7 @@ static void __afl_map_shm(void) {
 
 
     /* Set perf pointer to be just after the trace bits map */
-    __afl_perf_ptr = &__afl_area_ptr[MAP_SIZE];
+    __afl_perf_ptr = (u32 *) &__afl_area_ptr[MAP_SIZE];
 
   }
 
