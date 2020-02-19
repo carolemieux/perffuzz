@@ -36,6 +36,42 @@ make
 -  Q: I'm getting an error involving the ```-fno-rtti``` option.
 -  A: If you're on Redhat Linux, this may be a gcc/clang [compatibility issue](https://www.google.com/search?rlz=1C5CHFA_enUS731US732&ei=2u76W-eWLcSC_wT4g5vYBw&q=redhat+no+rtti+typeid&oq=redhat+no+rtti+typeid). Apparently [gcc-4.7 fixes the issue](https://issues.couchbase.com/browse/JSCBC-307). 
 
+## Test PerfFuzz on Insertion Sort
+
+To check whether PerfFuzz is working correctly, Try running it on the insertion sort benchmark provided.
+
+### Build
+
+First, compile the benchmark:
+```
+./afl-clang-fast insertion-sort.c -o isort
+```
+
+### Run PerfFuzz
+Let's make some seeds for PerfFuzz to start with:
+
+```
+mkdir isort-seeds
+head -c 64 /dev/zero > isort-seeds/zeroes
+```
+
+Now we can run PerfFuzz:
+```
+./afl-fuzz -p -i isort-seeds -o isort_perf_test/ -N 64 ./isort @@
+```
+You should see the number of `total paths` (this is a misnomer; it's just the number of saved inputs) increase consistently. You can also check to see if the saved inputs are heading towards a worst-case by running
+```
+for i in isort_perf_test/queue/id*; do ./isort $i | grep comps; done
+```
+(which, for each saved input, plots the number of comparisons insertion sort performed while sorting that input) 
+
+For comparison with the performance compared to regular afl, you can run:
+```./afl-fuzz -i isort-seeds -o isort_afl_test/ -N 64 ./isort @@```
+without the `-p` option, this should just run regular AFL. You should see `total_paths` quickly topping out around ~20 or so, and the number of cycles increase a lot. There will probably be much fewer comparisons performed for the saved inputs as well. The higher number of comparisons printed when you run:
+```
+for i in isort_afl_test/queue/id*; do ./isort $i | grep comps; done
+```
+should be smaller than what you saw for the inputs in `isort_perf_test/queue`.
 
  ## Running PerfFuzz on a program of your choice
  
