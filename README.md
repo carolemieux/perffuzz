@@ -38,7 +38,7 @@ make
 
 ## Test PerfFuzz on Insertion Sort
 
-To check whether PerfFuzz is working correctly, Try running it on the insertion sort benchmark provided.
+To check whether PerfFuzz is working correctly, try running it on the insertion sort benchmark provided. The following commands assume you are in the  PerfFuzz directory. 
 
 ### Build
 
@@ -67,7 +67,7 @@ for i in isort_perf_test/queue/id*; do ./isort $i | grep comps; done
 
 For comparison with the performance compared to regular afl, you can run:
 ```./afl-fuzz -i isort-seeds -o isort_afl_test/ -N 64 ./isort @@```
-without the `-p` option, this should just run regular AFL. You should see `total_paths` quickly topping out around ~20 or so, and the number of cycles increase a lot. There will probably be much fewer comparisons performed for the saved inputs as well. The higher number of comparisons printed when you run:
+without the `-p` option, this should just run regular AFL. You should see `total_paths` quickly topping out around ~20 or so, and the number of cycles increase a lot. There will probably be much fewer comparisons performed for the saved inputs as well. The highest number of comparisons printed when you run:
 ```
 for i in isort_afl_test/queue/id*; do ./isort $i | grep comps; done
 ```
